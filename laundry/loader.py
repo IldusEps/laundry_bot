@@ -10,7 +10,13 @@ from .logger import route_telebot_logs
 
 route_telebot_logs()
 log = logging.getLogger("telebot.errors")
+from telebot import apihelper
 
+if config.PROXY_URL:
+    apihelper.proxy = {'https': config.PROXY_URL}
+    print(f"[proxy] using {config.PROXY_URL}")
+else:
+    print("[proxy] not configured, going direct")
 
 class _LogExceptionHandler(telebot.ExceptionHandler):
     """Не даёт исключению в обработчике уронить polling, а пишет его в лог."""

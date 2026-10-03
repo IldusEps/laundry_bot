@@ -46,6 +46,7 @@ DB_PORT = int(os.getenv("DB_PORT", "3306"))
 DB_USER = _required("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 DB_NAME = _required("DB_NAME")
+PROXY_URL = os.getenv("PROXY_URL")
 
 # --- Время --------------------------------------------------------------------
 TIMEZONE = ZoneInfo(os.getenv("TIMEZONE", "Europe/Samara"))
