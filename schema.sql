@@ -1,4 +1,5 @@
 -- Схема БД бота записи на стирку (MySQL 5.7.8+ / 8.x, MariaDB 10.2+)
+-- Номер комнаты хранится строкой: '312', '323а'.
 -- Таблицы создаются автоматически при запуске бота, файл можно выполнить и вручную:
 --   mysql -u laundry_bot -p laundry_bot < schema.sql
 
@@ -7,7 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
     telegram_id      BIGINT            NOT NULL,
     username         VARCHAR(64)       NULL,
     surname          VARCHAR(64)       NULL,
-    room             SMALLINT UNSIGNED NULL,
+    room             VARCHAR(5)        NULL,
     floor            TINYINT UNSIGNED  NULL,
     wing             TINYINT UNSIGNED  NULL COMMENT 'крыло, только для 5 этажа',
     role             ENUM('resident', 'starosta') NOT NULL DEFAULT 'resident',
@@ -25,7 +26,7 @@ CREATE TABLE IF NOT EXISTS users (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS room_bans (
-    room       SMALLINT UNSIGNED NOT NULL,
+    room       VARCHAR(5)        NOT NULL,
     floor      TINYINT UNSIGNED  NOT NULL,
     banned_by  INT UNSIGNED      NULL,
     created_at DATETIME          NOT NULL,
@@ -37,7 +38,7 @@ CREATE TABLE IF NOT EXISTS bookings (
     id           INT UNSIGNED      NOT NULL AUTO_INCREMENT,
     user_id      INT UNSIGNED      NOT NULL,
     floor        TINYINT UNSIGNED  NOT NULL,
-    room         SMALLINT UNSIGNED NOT NULL,
+    room         VARCHAR(5)        NOT NULL,
     slot_date    DATE              NOT NULL,
     slot_start   TIME              NOT NULL,
     slot_end     TIME              NOT NULL,
@@ -74,10 +75,10 @@ CREATE TABLE IF NOT EXISTS change_requests (
     id          INT UNSIGNED      NOT NULL AUTO_INCREMENT,
     user_id     INT UNSIGNED      NOT NULL,
     old_surname VARCHAR(64)       NULL,
-    old_room    SMALLINT UNSIGNED NULL,
+    old_room    VARCHAR(5)        NULL,
     old_floor   TINYINT UNSIGNED  NULL,
     new_surname VARCHAR(64)       NOT NULL,
-    new_room    SMALLINT UNSIGNED NOT NULL,
+    new_room    VARCHAR(5)        NOT NULL,
     new_floor   TINYINT UNSIGNED  NOT NULL,
     new_wing    TINYINT UNSIGNED  NULL,
     status      ENUM('pending', 'approved', 'rejected', 'cancelled') NOT NULL DEFAULT 'pending',

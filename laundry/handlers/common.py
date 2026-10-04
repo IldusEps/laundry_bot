@@ -159,7 +159,7 @@ def step_surname(message: types.Message, state: states.State) -> None:
     states.update(message.from_user.id, "reg_room", surname=surname)
     send(message.chat.id,
          "🚪 Введите <b>номер комнаты</b> — 3 цифры, например <code>312</code>\n"
-         "(первая цифра — этаж, две следующие — номер комнаты на этаже):")
+         "(первая цифра — этаж, две следующие — номер комнаты на этаже; если есть буква — допишите её: <code>323а</code>):")
 
 
 @states.handler("reg_room")
@@ -199,11 +199,23 @@ def step_room(message: types.Message, state: states.State) -> None:
     states.clear(uid)
     user = result.user
     place = f"комната {room}, этаж {floor}" + (f", {wing} крыло" if wing else "")
+    if not (existing and existing.get("room")):
+        notify_new_user(user, place)
     send(message.chat.id,
          f"✅ Готово! <b>{esc(user['surname'])}</b>, {place}.\n\n"
          "Записаться на стирку — кнопка «📅 Записаться».\n"
          "Изменить фамилию или комнату, подать заявку на старосту — в «👤 Профиль».",
          main_menu(user, uid))
+
+
+def notify_new_user(user: dict, place: str) -> None:
+    """Тихое (без звука) уведомление администраторам и старостам этажа о новом жильце."""
+    text = (f"🆕 <b>Новый пользователь</b>\n{esc(user['surname'])}, {place}"
+            + (f"\n@{esc(user['username'])}" if user.get("username") else ""))
+    recipients = set(config.ADMIN_IDS) | {s["telegram_id"] for s in db.starostas(user["floor"])}
+    recipients.discard(user["telegram_id"])
+    for tg_id in recipients:
+        notify(tg_id, text, silent=True)
 
 
 # --------------------------------------------------------------------------- #

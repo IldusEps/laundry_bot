@@ -430,7 +430,7 @@ def st_ban_room(message: types.Message, state: states.State) -> None:
 
 @action("bry")
 def a_ban_room_do(call, manager, floor, args):
-    room = int(args[0])
+    room = args[0]
     residents, cancelled = services.ban_room(manager, floor, room)
     for u in residents:
         notify(u["telegram_id"],
@@ -514,7 +514,7 @@ def a_bans(call, manager, floor, args):
 
 @action("urr")
 def a_unban_room(call, manager, floor, args):
-    room = int(args[0])
+    room = args[0]
     residents = services.unban_room(manager, floor, room)
     for u in residents:
         if not u["is_banned"]:

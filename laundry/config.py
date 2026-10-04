@@ -46,7 +46,6 @@ DB_PORT = int(os.getenv("DB_PORT", "3306"))
 DB_USER = _required("DB_USER")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "")
 DB_NAME = _required("DB_NAME")
-PROXY_URL = os.getenv("PROXY_URL")
 
 # --- Время --------------------------------------------------------------------
 TIMEZONE = ZoneInfo(os.getenv("TIMEZONE", "Europe/Samara"))
@@ -60,8 +59,26 @@ LOG_MAX_MB = int(os.getenv("LOG_MAX_MB", "10"))
 LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "10"))
 
 # --- Общежитие ----------------------------------------------------------------
-MAX_FLOOR = int(os.getenv("MAX_FLOOR", "9"))
+MAX_FLOOR = int(os.getenv("MAX_FLOOR", "5"))
 MAX_ROOM_ON_FLOOR = int(os.getenv("MAX_ROOM_ON_FLOOR", "36"))
+
+
+def _floor_max_rooms() -> dict[int, int]:
+    """FLOOR_MAX_ROOMS=3:35,4:30 — свой максимальный номер комнаты для отдельных этажей."""
+    raw = os.getenv("FLOOR_MAX_ROOMS", "3:35").replace(" ", "")
+    try:
+        return {int(f): int(n) for f, n in (pair.split(":") for pair in raw.split(",") if pair)}
+    except ValueError as exc:
+        raise RuntimeError("FLOOR_MAX_ROOMS — пары этаж:номер через запятую, например 3:35") from exc
+
+
+# На 3 этаже вместо 336 есть 323а, поэтому номера там до 335
+FLOOR_MAX_ROOMS = _floor_max_rooms()
+# Комнаты с буквой, которые реально существуют (через запятую)
+LETTER_ROOMS = frozenset(r.strip().lower() for r in os.getenv("LETTER_ROOMS", "323а").split(",") if r.strip())
+
+# --- Прокси для Telegram (например socks5h://user:pass@host:1080); пусто — напрямую
+PROXY_URL = os.getenv("PROXY_URL", "").strip()
 
 # Когда открывается запись на новую неделю
 WEEK_OPEN_TIME = _hhmm("WEEK_OPEN_TIME", "15:00")                # понедельник, обычные этажи

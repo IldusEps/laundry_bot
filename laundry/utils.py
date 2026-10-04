@@ -47,10 +47,11 @@ def _description(exc: ApiTelegramException) -> str:
     return str(getattr(exc, "description", "") or exc)
 
 
-def send(chat_id: int, text: str, reply_markup: Any = None) -> bool:
-    """Отправка с перехватом ошибок (пользователь мог заблокировать бота)."""
+def send(chat_id: int, text: str, reply_markup: Any = None, silent: bool = False) -> bool:
+    """Отправка с перехватом ошибок (пользователь мог заблокировать бота).
+    silent=True — сообщение придёт без звука."""
     try:
-        bot.send_message(chat_id, text, reply_markup=reply_markup)
+        bot.send_message(chat_id, text, reply_markup=reply_markup, disable_notification=silent or None)
         return True
     except ApiTelegramException as exc:
         log.warning("Не удалось отправить сообщение chat_id=%s: %s", chat_id, _description(exc))
@@ -70,10 +71,10 @@ def send_long(chat_id: int, text: str, reply_markup: Any = None) -> None:
         send(chat_id, chunk, reply_markup if i == len(chunks) - 1 else None)
 
 
-def notify(telegram_id: int | None, text: str, reply_markup: Any = None) -> bool:
+def notify(telegram_id: int | None, text: str, reply_markup: Any = None, silent: bool = False) -> bool:
     if not telegram_id:
         return False
-    return send(telegram_id, text, reply_markup)
+    return send(telegram_id, text, reply_markup, silent=silent)
 
 
 def _png(data: bytes) -> io.BytesIO:

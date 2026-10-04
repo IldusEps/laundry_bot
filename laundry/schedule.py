@@ -108,11 +108,23 @@ def floor_is_bookable(floor: int | None) -> bool:
 # --------------------------------------------------------------------------- #
 #  Комнаты и крылья
 # --------------------------------------------------------------------------- #
-def wing_of(room: int) -> int | None:
-    """1 крыло: 511–527, 2 крыло: 501–510 и 528–536. Для других этажей — None."""
-    if room // 100 != SPECIAL_FLOOR:
+ROOM_RE = re.compile(r"(\d)(\d{2})\s*([а-яё]?)", re.IGNORECASE)
+_LATIN_TO_CYR = str.maketrans("abvgdezikmnoprstufhc", "абвгдезикмнопрстуфхс")
+
+
+def room_floor(room: str) -> int:
+    return int(str(room)[0])
+
+
+def room_number(room: str) -> int:
+    return int(str(room)[1:3])
+
+
+def wing_of(room: str) -> int | None:
+    """1 крыло: 511–527, 2 крыло: 501–510 и 528–536 (буква в номере на крыло не влияет)."""
+    if room_floor(room) != SPECIAL_FLOOR:
         return None
-    number = room % 100
+    number = room_number(room)
     if 11 <= number <= 27:
         return 1
     if 1 <= number <= 10 or 28 <= number <= 36:
@@ -124,32 +136,46 @@ class RoomError(ValueError):
     pass
 
 
-def parse_room(text: str) -> tuple[int, int, int | None]:
-    """'312' -> (312, 3, None); '515' -> (515, 5, 1). Бросает RoomError с понятным текстом."""
-    raw = (text or "").strip()
-    if not re.fullmatch(r"\d{3}", raw):
-        raise RoomError("Номер комнаты — это 3 цифры, например 312.")
-    room = int(raw)
-    floor, number = divmod(room, 100)
+def parse_room(text: str) -> tuple[str, int, int | None]:
+    """'312' -> ('312', 3, None); '323А' -> ('323а', 3, None); '515' -> ('515', 5, 1).
+
+    Номер — 3 цифры (этаж + комната на этаже), после них может стоять одна буква: 323а.
+    Комната с буквой — отдельная комната (свои баны и лимиты), этаж и крыло — как у номера без буквы.
+    """
+    raw = (text or "").strip().lower().translate(_LATIN_TO_CYR)
+    m = ROOM_RE.fullmatch(raw)
+    if not m:
+        raise RoomError("Номер комнаты — это 3 цифры, например 312 (можно с буквой: 323а).")
+    floor, number, letter = int(m.group(1)), int(m.group(2)), m.group(3)
+    room = f"{floor}{number:02d}{letter}"
     if floor == 0 or number == 0:
         raise RoomError("Такой комнаты нет: первая цифра — этаж, две следующие — номер комнаты (01, 02, …).")
     if floor == 1:
         raise RoomError("Для 1 этажа запись на стирку не проводится.")
     if floor > config.MAX_FLOOR:
         raise RoomError(f"В общежитии {config.MAX_FLOOR} этажей — проверьте номер комнаты.")
+    if letter and room not in config.LETTER_ROOMS:
+        known = ", ".join(sorted(config.LETTER_ROOMS)) or "нет"
+        raise RoomError(f"Комнаты {room} нет. Комнаты с буквой в общежитии: {known}.")
     if floor == SPECIAL_FLOOR:
         wing = wing_of(room)
         if wing is None:
             raise RoomError("На 5 этаже комнаты с 501 по 536.")
         return room, floor, wing
-    if number > config.MAX_ROOM_ON_FLOOR:
-        raise RoomError(f"На этаже комнаты с {floor}01 по {floor}{config.MAX_ROOM_ON_FLOOR:02d}.")
+    max_room = max_room_on(floor)
+    if number > max_room:
+        extra = "".join(f" и {r}" for r in sorted(config.LETTER_ROOMS) if room_floor(r) == floor)
+        raise RoomError(f"На {floor} этаже комнаты с {floor}01 по {floor}{max_room:02d}{extra}.")
     return room, floor, None
 
 
-def room_on_floor(text: str, floor: int) -> int:
-    room, room_floor, _ = parse_room(text)
-    if room_floor != floor:
+def max_room_on(floor: int) -> int:
+    return config.FLOOR_MAX_ROOMS.get(floor, config.MAX_ROOM_ON_FLOOR)
+
+
+def room_on_floor(text: str, floor: int) -> str:
+    room, room_floor_, _ = parse_room(text)
+    if room_floor_ != floor:
         raise RoomError(f"Комната {room} не на {floor} этаже.")
     return room
 

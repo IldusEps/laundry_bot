@@ -1,4 +1,5 @@
 pyTelegramBotAPI>=4.20
+requests[socks]>=2.31  # SOCKS5-прокси (PySocks)
 PyMySQL>=1.1
 cryptography>=41      # нужен PyMySQL для авторизации в MySQL 8 (caching_sha2_password)
 Pillow>=10.0         # картинка с расписанием

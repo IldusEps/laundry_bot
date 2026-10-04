@@ -85,7 +85,7 @@ class RegistrationResult:
 
 
 def save_registration(existing: dict | None, telegram_id: int, username: str | None, surname: str,
-                      room: int, floor: int, wing: int | None, at: datetime | None = None) -> RegistrationResult:
+                      room: str, floor: int, wing: int | None, at: datetime | None = None) -> RegistrationResult:
     at = at or sched.now()
     old_room = existing.get("room") if existing else None
     room_changed = old_room is not None and old_room != room
@@ -340,11 +340,11 @@ def reopen(manager: dict, floor: int, closure_id: int) -> dict:
 # --------------------------------------------------------------------------- #
 #  Исключение комнат и жильцов
 # --------------------------------------------------------------------------- #
-def ban_room(manager: dict, floor: int, room: int, at: datetime | None = None) -> tuple[list[dict], list[dict]]:
+def ban_room(manager: dict, floor: int, room: str, at: datetime | None = None) -> tuple[list[dict], list[dict]]:
     """Возвращает (жильцы комнаты, отменённые записи)."""
     at = at or sched.now()
     _require_manager(manager, floor)
-    if room // 100 != floor:
+    if sched.room_floor(room) != floor:
         raise ServiceError(f"Комната {room} не на {floor} этаже.")
     if manager.get("room") == room:
         raise ServiceError("Нельзя исключить свою комнату.")
@@ -355,9 +355,9 @@ def ban_room(manager: dict, floor: int, room: int, at: datetime | None = None) -
     return db.users_in_room(room), cancelled
 
 
-def unban_room(manager: dict, floor: int, room: int) -> list[dict]:
+def unban_room(manager: dict, floor: int, room: str) -> list[dict]:
     _require_manager(manager, floor)
-    if room // 100 != floor:
+    if sched.room_floor(room) != floor:
         raise ServiceError(f"Комната {room} не на {floor} этаже.")
     if not db.remove_room_ban(room):
         raise ServiceError(f"Комната {room} не была исключена.")
@@ -397,7 +397,7 @@ def unban_user(manager: dict, floor: int, user_id: int, at: datetime | None = No
 # --------------------------------------------------------------------------- #
 #  Смена фамилии / комнаты — только через старосту
 # --------------------------------------------------------------------------- #
-def request_change(user: dict, surname: str, room: int, floor: int, wing: int | None,
+def request_change(user: dict, surname: str, room: str, floor: int, wing: int | None,
                    at: datetime | None = None) -> dict:
     at = at or sched.now()
     if surname == user["surname"] and room == user["room"]:

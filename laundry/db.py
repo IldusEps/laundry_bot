@@ -130,7 +130,25 @@ def init_db() -> None:
     with transaction() as cur:
         for statement in statements:
             cur.execute(statement)
+        # Миграция со старой схемы, где номер комнаты был числом (SMALLINT) — теперь строка ('323а')
+        for table, column, null in _ROOM_COLUMNS:
+            cur.execute(
+                "SELECT DATA_TYPE AS t FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s", (table, column))
+            row = cur.fetchone()
+            if row and str(row["t"]).lower() != "varchar":
+                cur.execute(f"ALTER TABLE {table} MODIFY {column} VARCHAR(5) {null}")
+                log.info("Миграция: %s.%s -> VARCHAR(5)", table, column)
     log.info("Схема БД проверена (%d таблиц)", len(statements))
+
+
+_ROOM_COLUMNS = (
+    ("users", "room", "NULL"),
+    ("room_bans", "room", "NOT NULL"),
+    ("bookings", "room", "NOT NULL"),
+    ("change_requests", "old_room", "NULL"),
+    ("change_requests", "new_room", "NOT NULL"),
+)
 
 
 def sync_admins(admin_ids: frozenset[int], at: datetime) -> None:
@@ -161,7 +179,7 @@ def get_user_by_id(user_id: int) -> dict | None:
     return fetch_one("SELECT * FROM users WHERE id = %s", (user_id,))
 
 
-def save_registration(telegram_id: int, username: str | None, surname: str, room: int,
+def save_registration(telegram_id: int, username: str | None, surname: str, room: str,
                       floor: int, wing: int | None, at: datetime) -> dict:
     now = _naive(at)
     with transaction() as cur:
@@ -205,7 +223,7 @@ def users_on_floor(floor: int) -> list[dict]:
     return fetch_all("SELECT * FROM users WHERE floor = %s ORDER BY room, surname", (floor,))
 
 
-def users_in_room(room: int) -> list[dict]:
+def users_in_room(room: str) -> list[dict]:
     return fetch_all("SELECT * FROM users WHERE room = %s ORDER BY surname", (room,))
 
 
@@ -225,11 +243,11 @@ def banned_users(floor: int) -> list[dict]:
 # --------------------------------------------------------------------------- #
 #  Баны комнат
 # --------------------------------------------------------------------------- #
-def get_room_ban(room: int) -> dict | None:
+def get_room_ban(room: str) -> dict | None:
     return fetch_one("SELECT * FROM room_bans WHERE room = %s", (room,))
 
 
-def add_room_ban(room: int, floor: int, by_user_id: int, at: datetime) -> bool:
+def add_room_ban(room: str, floor: int, by_user_id: int, at: datetime) -> bool:
     with transaction() as cur:
         cur.execute("SELECT room FROM room_bans WHERE room = %s FOR UPDATE", (room,))
         if cur.fetchone():
@@ -239,7 +257,7 @@ def add_room_ban(room: int, floor: int, by_user_id: int, at: datetime) -> bool:
         return True
 
 
-def remove_room_ban(room: int) -> bool:
+def remove_room_ban(room: str) -> bool:
     return execute("DELETE FROM room_bans WHERE room = %s", (room,)) > 0
 
 
@@ -281,13 +299,13 @@ def count_user_bookings_on(user_id: int, day: date) -> int:
     return int(row["n"]) if row else 0
 
 
-def count_room_bookings_on(room: int, day: date) -> int:
+def count_room_bookings_on(room: str, day: date) -> int:
     row = fetch_one("SELECT COUNT(*) AS n FROM bookings WHERE room = %s AND slot_date = %s AND status = 'active'",
                     (room, day))
     return int(row["n"]) if row else 0
 
 
-def create_booking(*, user_id: int, floor: int, room: int, slot_date: date, slot_start: time, slot_end: time,
+def create_booking(*, user_id: int, floor: int, room: str, slot_date: date, slot_start: time, slot_end: time,
                    user_limit: int, room_limit: int | None, at: datetime) -> int:
     """Создаёт запись, проверяя все ограничения внутри одной транзакции."""
     with transaction() as cur:
@@ -362,7 +380,7 @@ def cancel_future_bookings_of_user(user_id: int, by_user_id: int, at: datetime) 
     return _cancel_where("b.user_id = %s", (user_id,), by_user_id, at)
 
 
-def cancel_future_bookings_of_room(room: int, by_user_id: int, at: datetime) -> list[dict]:
+def cancel_future_bookings_of_room(room: str, by_user_id: int, at: datetime) -> list[dict]:
     return _cancel_where("b.room = %s", (room,), by_user_id, at)
 
 
@@ -433,7 +451,7 @@ def delete_closure(closure_id: int) -> bool:
 _CHANGE_SELECT = "SELECT c.*, u.telegram_id, u.username FROM change_requests c JOIN users u ON u.id = c.user_id "
 
 
-def create_change_request(user: dict, new_surname: str, new_room: int, new_floor: int, new_wing: int | None,
+def create_change_request(user: dict, new_surname: str, new_room: str, new_floor: int, new_wing: int | None,
                           at: datetime) -> int:
     """Создаёт заявку; прежняя незакрытая заявка этого человека отменяется."""
     with transaction() as cur:

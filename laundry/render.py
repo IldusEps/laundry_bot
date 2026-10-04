@@ -124,7 +124,7 @@ def _slots_list(rules: sched.FloorRules) -> str:
 
 
 def _regular_floors() -> str:
-    """[2, 3, 4, 6, 7, 8, 9] -> '2–4, 6–9'"""
+    """[2, 3, 4] -> '2–4'; [2, 3, 4, 6, 7] -> '2–4, 6–7'"""
     floors = [f for f in sched.bookable_floors() if f != sched.SPECIAL_FLOOR]
     groups: list[list[int]] = []
     for f in floors:
