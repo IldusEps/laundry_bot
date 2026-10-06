@@ -28,17 +28,31 @@ def _hhmm(name: str, default: str) -> time:
         raise RuntimeError(f"{name} должно быть в формате ЧЧ:ММ, сейчас: {raw!r}") from exc
 
 
-def _admin_ids() -> frozenset[int]:
-    raw = os.getenv("ADMIN_IDS", "").replace(" ", "")
+def _ids(name: str, what: str) -> frozenset[int]:
+    raw = os.getenv(name, "").replace(" ", "")
     try:
         return frozenset(int(x) for x in raw.split(",") if x)
     except ValueError as exc:
-        raise RuntimeError("ADMIN_IDS — это telegram_id через запятую, например 123456789,987654321") from exc
+        raise RuntimeError(f"{name} — это {what} через запятую, например 123456789,987654321") from exc
 
 
-# --- Telegram -----------------------------------------------------------------
-BOT_TOKEN = _required("BOT_TOKEN")
-ADMIN_IDS = _admin_ids()
+def _int(name: str, default: int = 0) -> int:
+    raw = os.getenv(name, "").strip()
+    try:
+        return int(raw) if raw else default
+    except ValueError as exc:
+        raise RuntimeError(f"{name} должно быть числом, сейчас: {raw!r}") from exc
+
+
+# --- Telegram (BOT_TOKEN проверяет main.py; пусто — уведомления в Telegram не отправляются)
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+ADMIN_IDS = _ids("ADMIN_IDS", "telegram_id")
+
+# --- ВКонтакте (VK_TOKEN проверяет vk_main.py; пусто — уведомления в VK не отправляются)
+VK_TOKEN = os.getenv("VK_TOKEN", "").strip()
+VK_GROUP_ID = abs(_int("VK_GROUP_ID"))
+VK_ADMIN_IDS = _ids("VK_ADMIN_IDS", "id пользователей VK")
+VK_API_VERSION = "5.199"
 
 # --- MySQL --------------------------------------------------------------------
 DB_HOST = os.getenv("DB_HOST", "localhost")

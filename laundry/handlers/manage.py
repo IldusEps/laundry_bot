@@ -14,8 +14,9 @@ from telebot import types
 from .. import db, image, render, services, states
 from .. import schedule as sched
 from ..loader import bot
+from ..notify import send_to_user
 from ..render import esc
-from ..utils import answer_result, btn, edit, grid_kb, inline, notify, safe, send, send_long
+from ..utils import answer_result, btn, edit, grid_kb, inline, safe, send, send_long
 
 log = logging.getLogger(__name__)
 
@@ -28,10 +29,6 @@ def _cb(floor: int, action: str, *args: object) -> str:
 
 def _back(floor: int, action: str = "", text: str = "⬅️ Назад") -> types.InlineKeyboardButton:
     return btn(text, _cb(floor, action) if action else f"m:{floor}")
-
-
-def _by_role(manager: dict) -> str:
-    return "администратором" if services.is_admin(manager["telegram_id"]) else "старостой этажа"
 
 
 # --------------------------------------------------------------------------- #
@@ -53,7 +50,7 @@ def menu_view(manager: dict, floor: int) -> tuple[str, types.InlineKeyboardMarku
     ]
     changes = len(db.pending_change_requests(floor))
     rows.insert(1, btn(f"📝 Заявки на изменение данных ({changes})", _cb(floor, "chq")))
-    if services.is_admin(manager["telegram_id"]):
+    if services.is_admin(manager):
         rows.append(btn("⬅️ К выбору этажа", "adm:floors"))
     return text, inline(*rows)
 
@@ -170,8 +167,7 @@ def a_cancel_confirm(call, manager, floor, args):
 def a_cancel_do(call, manager, floor, args):
     booking = services.cancel_by_manager(manager, floor, int(args[0]))
     if booking["user_id"] != manager["id"]:
-        notify(booking["telegram_id"],
-               f"❗ Ваша запись на стирку <b>{render.booking_label_full(booking)}</b> отменена {_by_role(manager)}.")
+        send_to_user(booking, render.cancelled_by_manager_text(booking, manager))
     view = _day_view(manager, floor, booking["slot_date"])
     if view:
         edit(call, "✅ Запись отменена.\n\n" + view[0], view[1])
@@ -361,9 +357,7 @@ def a_close_do(call, manager, floor, args):
     states.clear(call.from_user.id)
     reason = f"\nПричина: {esc(d['reason'])}" if d.get("reason") else ""
     for b in cancelled:
-        notify(b["telegram_id"],
-               f"❗ Ваша запись на стирку <b>{render.booking_label_full(b)}</b> отменена: "
-               f"запись на это время закрыта {_by_role(manager)}.{reason}")
+        send_to_user(b, render.cancelled_by_closure_text(b, manager, d.get("reason")))
     edit(call,
          f"🔒 Запись закрыта: {render.closure_label(d)}.{reason}\n"
          f"Отменено записей: {len(cancelled)}.",
@@ -433,10 +427,7 @@ def a_ban_room_do(call, manager, floor, args):
     room = args[0]
     residents, cancelled = services.ban_room(manager, floor, room)
     for u in residents:
-        notify(u["telegram_id"],
-               f"🚫 Комната {room} исключена {_by_role(manager)} из записи на стирку "
-               "(например, если не скинулись за стирку). Ваши будущие записи отменены. "
-               "Обратитесь к старосте этажа.")
+        send_to_user(u, render.room_banned_text(room, manager))
     edit(call, f"🚫 Комната {room} исключена. Отменено записей: {len(cancelled)}.",
          inline(btn("✅ Исключённые", _cb(floor, "bans")), _back(floor, "", "⬅️ В панель")))
     return "Комната исключена"
@@ -485,9 +476,7 @@ def a_ban_user_confirm(call, manager, floor, args):
 @action("buy")
 def a_ban_user_do(call, manager, floor, args):
     target, cancelled = services.ban_user(manager, floor, int(args[0]))
-    notify(target["telegram_id"],
-           f"🚫 Вы исключены {_by_role(manager)} из записи на стирку (например, если не скинулись за стирку). "
-           "Ваши будущие записи отменены. Обратитесь к старосте этажа.")
+    send_to_user(target, render.user_banned_text(manager))
     edit(call, f"🚫 {esc(target['surname'])} (к.{target['room']}) исключён(а). Отменено записей: {len(cancelled)}.",
          inline(btn("✅ Исключённые", _cb(floor, "bans")), _back(floor, "", "⬅️ В панель")))
     return "Жилец исключён"
@@ -518,7 +507,7 @@ def a_unban_room(call, manager, floor, args):
     residents = services.unban_room(manager, floor, room)
     for u in residents:
         if not u["is_banned"]:
-            notify(u["telegram_id"], f"✅ Комнате {room} снова доступна запись на стирку.")
+            send_to_user(u, render.room_unbanned_text(room))
     a_bans(call, manager, floor, [])
     return f"Комната {room} возвращена"
 
@@ -526,7 +515,7 @@ def a_unban_room(call, manager, floor, args):
 @action("uru")
 def a_unban_user(call, manager, floor, args):
     target = services.unban_user(manager, floor, int(args[0]))
-    notify(target["telegram_id"], "✅ Вам снова доступна запись на стирку.")
+    send_to_user(target, render.USER_UNBANNED_TEXT)
     a_bans(call, manager, floor, [])
     return "Жилец возвращён"
 
@@ -576,7 +565,6 @@ def a_change_requests(call, manager, floor, args):
 @safe
 def change_callbacks(call: types.CallbackQuery) -> None:
     from .common import change_label  # noqa: PLC0415
-    from ..keyboards import main_menu  # noqa: PLC0415
     _, verdict, request_id = call.data.split(":")
     manager = db.get_user(call.from_user.id)
     try:
@@ -584,17 +572,12 @@ def change_callbacks(call: types.CallbackQuery) -> None:
     except services.ServiceError as exc:
         answer_result(call, (str(exc), True))
         return
-    by = _by_role(manager)  # type: ignore[arg-type]
+    text = render.change_decided_text(request, manager, result)  # type: ignore[arg-type]
     if result is None:
-        notify(request["telegram_id"], "❌ Заявка на изменение данных отклонена " + by + ".\n" + change_label(request))
+        send_to_user(request, text)
         status = "отклонена ❌"
     else:
-        text = "✅ Изменение данных подтверждено " + by + ".\n" + change_label(request)
-        if result.cancelled:
-            text += f"\nКомната изменилась — ваши будущие записи ({len(result.cancelled)}) отменены."
-        if result.role_reset:
-            text += "\nВы переехали на другой этаж, поэтому роль старосты снята."
-        notify(request["telegram_id"], text, main_menu(result.user, request["telegram_id"]))
+        send_to_user(result.user, text, menu=True)
         status = "принята ✅"
     back = (btn("⬅️ В панель", f"m:{manager['floor']}") if manager and manager["role"] == "starosta"
             and services.can_manage(manager, manager["floor"]) else btn("🛠 Админ-панель", "adm"))

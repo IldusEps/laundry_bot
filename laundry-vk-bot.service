@@ -1,0 +1,22 @@
+# Автозапуск VK-бота на Linux-сервере (systemd). Работает рядом с laundry-bot.service (Telegram)
+# на той же базе MySQL и с тем же файлом .env.
+# 1) Проект уже лежит в /opt/laundry_bot, venv создан, зависимости обновлены (см. README)
+# 2) sudo cp laundry-vk-bot.service /etc/systemd/system/
+# 3) sudo systemctl daemon-reload && sudo systemctl enable --now laundry-vk-bot
+
+[Unit]
+Description=VK bot: запись на стирку в общежитии
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=laundry
+WorkingDirectory=/opt/laundry_bot
+ExecStart=/opt/laundry_bot/venv/bin/python vk_main.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

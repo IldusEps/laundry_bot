@@ -1,14 +1,13 @@
+-- СТАРАЯ схема (до VK-бота), как в коммите до доработки. Нужна только тесту миграции: tests/test_migration_mysql.py
 -- Схема БД бота записи на стирку (MySQL 5.7.8+ / 8.x, MariaDB 10.2+)
 -- Номер комнаты хранится строкой: '312', '323а'.
--- Базу используют оба бота (Telegram и VK): у пользователя есть telegram_id, vk_id или оба (после привязки).
 -- Таблицы создаются автоматически при запуске бота, файл можно выполнить и вручную:
 --   mysql -u laundry_bot -p laundry_bot < schema.sql
 
 CREATE TABLE IF NOT EXISTS users (
     id               INT UNSIGNED      NOT NULL AUTO_INCREMENT,
-    telegram_id      BIGINT            NULL,
-    vk_id            BIGINT            NULL,
-    username         VARCHAR(64)       NULL COMMENT 'username в Telegram',
+    telegram_id      BIGINT            NOT NULL,
+    username         VARCHAR(64)       NULL,
     surname          VARCHAR(64)       NULL,
     room             VARCHAR(5)        NULL,
     floor            TINYINT UNSIGNED  NULL,
@@ -23,7 +22,6 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at       DATETIME          NOT NULL,
     PRIMARY KEY (id),
     UNIQUE KEY uq_users_telegram (telegram_id),
-    UNIQUE KEY uq_users_vk (vk_id),
     KEY ix_users_room (room),
     KEY ix_users_floor (floor)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -91,16 +89,4 @@ CREATE TABLE IF NOT EXISTS change_requests (
     PRIMARY KEY (id),
     KEY ix_change_requests_status (status, old_floor, new_floor),
     CONSTRAINT fk_change_requests_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- Коды привязки второго мессенджера: код выдаётся в профиле одного бота и вводится в другом
-CREATE TABLE IF NOT EXISTS link_codes (
-    code       CHAR(6)           NOT NULL,
-    user_id    INT UNSIGNED      NOT NULL,
-    platform   ENUM('tg', 'vk')  NOT NULL COMMENT 'в каком мессенджере нужно ввести код',
-    expires_at DATETIME          NOT NULL,
-    created_at DATETIME          NOT NULL,
-    PRIMARY KEY (code),
-    KEY ix_link_codes_user (user_id),
-    CONSTRAINT fk_link_codes_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

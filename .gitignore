@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+PROMPT_VK.md

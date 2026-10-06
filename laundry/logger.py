@@ -3,6 +3,9 @@
 logs/bot.log      — всё (INFO и выше по умолчанию)
 logs/errors.log   — только ошибки с трейсбеками
 logs/actions.log  — журнал действий: записи, отмены, баны, закрытия, роли
+
+VK-бот — отдельный процесс, он пишет в свои файлы с префиксом: vk_bot.log, vk_errors.log, vk_actions.log
+(два процесса не должны ротировать один и тот же файл).
 """
 from __future__ import annotations
 
@@ -15,6 +18,8 @@ from . import config
 
 FORMAT = "%(asctime)s | %(levelname)-8s | %(threadName)-12s | %(name)s | %(message)s"
 ACTIONS_LOGGER = "actions"
+LOG_FILES = ("bot.log", "errors.log", "actions.log")
+VK_PREFIX = "vk_"
 
 
 def _file_handler(filename: str, level: int) -> RotatingFileHandler:
@@ -29,24 +34,30 @@ def _file_handler(filename: str, level: int) -> RotatingFileHandler:
     return handler
 
 
-def setup_logging() -> None:
+def setup_logging(prefix: str = "") -> None:
+    """prefix — приставка к именам файлов: у VK-процесса 'vk_' (vk_bot.log и т.д.), у Telegram — пусто."""
     config.LOG_DIR.mkdir(parents=True, exist_ok=True)
+    bot_log, errors_log, actions_log = (prefix + name for name in LOG_FILES)
 
     root = logging.getLogger()
+    actions = logging.getLogger(ACTIONS_LOGGER)
+    for target in (root, actions):  # повторная настройка: прежние файлы закрываем, строки не дублируются
+        for handler in target.handlers[:]:
+            target.removeHandler(handler)
+            handler.close()
     root.setLevel(config.LOG_LEVEL)
-    root.handlers.clear()
 
     console = logging.StreamHandler(sys.stdout)
     console.setFormatter(logging.Formatter(FORMAT))
     root.addHandler(console)
-    root.addHandler(_file_handler("bot.log", logging.DEBUG))
-    root.addHandler(_file_handler("errors.log", logging.ERROR))
+    root.addHandler(_file_handler(bot_log, logging.DEBUG))
+    root.addHandler(_file_handler(errors_log, logging.ERROR))
 
-    actions = logging.getLogger(ACTIONS_LOGGER)
     actions.setLevel(logging.INFO)
-    actions.addHandler(_file_handler("actions.log", logging.INFO))  # + попадает в bot.log через root
+    actions.addHandler(_file_handler(actions_log, logging.INFO))  # + попадает в bot.log через root
 
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("vk_api").setLevel(logging.WARNING)
 
     def _excepthook(exc_type, exc, tb):
         logging.getLogger("uncaught").critical("Необработанное исключение", exc_info=(exc_type, exc, tb))

@@ -50,7 +50,7 @@ def on_state_input(message: types.Message) -> None:
 def on_other_text(message: types.Message) -> None:
     uid = message.from_user.id
     user = db.get_user(uid)
-    if not services.is_registered(user) and not services.is_admin(uid):
+    if not services.is_registered(user) and not services.is_admin(user):
         common.start_registration(message.chat.id, uid)
         return
     send(message.chat.id, "Не понял 🤔 Воспользуйтесь кнопками меню.", main_menu(user, uid))

@@ -1,4 +1,4 @@
-"""Точка входа: python main.py"""
+"""Точка входа Telegram-бота: python main.py  (VK-бот — отдельный процесс: python vk_main.py)"""
 from __future__ import annotations
 
 import logging
@@ -7,9 +7,14 @@ from laundry.logger import setup_logging
 
 setup_logging()
 
+from laundry import config  # noqa: E402
+
+if not config.BOT_TOKEN:
+    raise SystemExit("Не задан BOT_TOKEN — заполните файл .env (токен от @BotFather)")
+
 from telebot import types  # noqa: E402
 
-from laundry import config, db  # noqa: E402
+from laundry import db  # noqa: E402
 from laundry import schedule as sched  # noqa: E402
 from laundry.loader import bot  # noqa: E402
 import laundry.handlers  # noqa: E402,F401  (регистрирует обработчики)
@@ -31,9 +36,11 @@ def main() -> None:
     log.info("Запуск бота. Часовой пояс: %s, этажей: %s, админов: %d",
              config.TIMEZONE, config.MAX_FLOOR, len(config.ADMIN_IDS))
     db.init_db()
-    db.sync_admins(config.ADMIN_IDS, sched.now())
+    db.sync_admins(config.ADMIN_IDS, config.VK_ADMIN_IDS, sched.now())
     if not config.ADMIN_IDS:
-        log.warning("ADMIN_IDS пуст — заявки старост некому подтверждать")
+        log.warning("ADMIN_IDS пуст — в Telegram нет администратора")
+    if not config.VK_TOKEN:
+        log.info("VK_TOKEN не задан — уведомления в VK отправляться не будут")
     try:
         bot.set_my_commands(COMMANDS)
     except Exception:  # не критично

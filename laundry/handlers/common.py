@@ -5,12 +5,12 @@ import logging
 
 from telebot import types
 
-from .. import config, db, render, services, states
+from .. import db, notify, render, services, states
 from .. import schedule as sched
 from ..keyboards import main_menu, remove
 from ..loader import bot
-from ..render import esc
-from ..utils import answer_result, btn, edit, inline, notify, safe, send
+from ..render import change_label, esc
+from ..utils import answer_result, btn, edit, inline, safe, send
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +26,9 @@ def start_registration(chat_id: int, telegram_id: int, mode: str = "new") -> Non
                       "Изменения вступят в силу после того, как их подтвердит староста этажа.\n\n"
                       "Введите фамилию (можно прежнюю):\n\n/cancel — отменить")
     else:
-        send(chat_id, "✏️ Введите вашу <b>фамилию</b>:", remove())
+        hint = ("\n\n🔗 Уже записываетесь через бота ВКонтакте? Вместо фамилии отправьте код привязки "
+                "из профиля VK-бота — аккаунты станут общими." if services.platform_configured("vk") else "")
+        send(chat_id, "✏️ Введите вашу <b>фамилию</b>:" + hint, remove())
 
 
 # --------------------------------------------------------------------------- #
@@ -41,7 +43,7 @@ def cmd_start(message: types.Message) -> None:
     if services.is_registered(user):
         send(message.chat.id, f"👋 С возвращением, {esc(user['surname'])}!", main_menu(user, uid))
         return
-    if services.is_admin(uid):
+    if services.is_admin(user):
         send(message.chat.id,
              "👋 Вы вошли как <b>администратор</b>.\n\n"
              "Если вы сами живёте в общежитии и хотите записываться на стирку — нажмите «📝 Регистрация».",
@@ -59,7 +61,7 @@ def cmd_cancel(message: types.Message) -> None:
     uid = message.from_user.id
     had_state = states.clear(uid) is not None
     user = db.get_user(uid)
-    if not services.is_registered(user) and not services.is_admin(uid):
+    if not services.is_registered(user) and not services.is_admin(user):
         send(message.chat.id, "Без регистрации бот не работает — давайте закончим её.")
         start_registration(message.chat.id, uid)
         return
@@ -108,17 +110,6 @@ def cmd_register(message: types.Message) -> None:
     start_registration(message.chat.id, uid)
 
 
-def change_label(req: dict) -> str:
-    def place(surname, room, floor):
-        return f"{esc(surname or '—')}, к.{room or '—'}" + (f" (этаж {floor})" if floor else "")
-    return (f"Было: {place(req['old_surname'], req['old_room'], req['old_floor'])}\n"
-            f"Стало: {place(req['new_surname'], req['new_room'], req['new_floor'])}")
-
-
-def change_keyboard(req: dict) -> types.InlineKeyboardMarkup:
-    return inline([btn("✅ Принять", f"chg:ok:{req['id']}"), btn("❌ Отклонить", f"chg:no:{req['id']}")])
-
-
 def _profile_keyboard(user: dict, pending_change: dict | None) -> types.InlineKeyboardMarkup:
     rows = []
     if not pending_change:
@@ -126,6 +117,8 @@ def _profile_keyboard(user: dict, pending_change: dict | None) -> types.InlineKe
     if (user["role"] != "starosta" and not user["starosta_pending"]
             and sched.floor_is_bookable(user["floor"])):
         rows.append(btn("⭐ Я староста этажа — подать заявку", "pr:st"))
+    if services.can_link(user, "tg"):
+        rows.append(btn("🔗 Привязать ВКонтакте", "pr:link"))
     return inline(*rows)
 
 
@@ -133,7 +126,7 @@ def cmd_profile(message: types.Message) -> None:
     uid = message.from_user.id
     user = db.get_user(uid)
     if not services.is_registered(user):
-        if services.is_admin(uid):
+        if services.is_admin(user):
             send(message.chat.id, render.profile_text(user or {}, False, True)
                  + "\n\nЧтобы записываться на стирку, нажмите «📝 Регистрация».")
         else:
@@ -141,7 +134,7 @@ def cmd_profile(message: types.Message) -> None:
         return
     room_banned = db.get_room_ban(user["room"]) is not None
     pending = db.user_pending_change(user["id"])
-    text = render.profile_text(user, room_banned, services.is_admin(uid))
+    text = render.profile_text(user, room_banned, services.is_admin(user))
     if pending:
         text += "\n\n📝 <b>Заявка на изменение ждёт старосту</b>\n" + change_label(pending)
     send(message.chat.id, text, _profile_keyboard(user, pending))
@@ -152,6 +145,9 @@ def cmd_profile(message: types.Message) -> None:
 # --------------------------------------------------------------------------- #
 @states.handler("reg_surname")
 def step_surname(message: types.Message, state: states.State) -> None:
+    if state.data.get("mode") != "change" and services.LINK_CODE_RE.fullmatch((message.text or "").strip()):
+        link_by_code(message)
+        return
     surname = services.normalize_surname(message.text)
     if surname is None:
         send(message.chat.id, "Фамилия — только буквы (можно через дефис), от 2 до 40 символов. Попробуйте ещё раз:")
@@ -179,14 +175,8 @@ def step_room(message: types.Message, state: states.State) -> None:
         except services.ServiceError as exc:
             show_menu(message.chat.id, uid, str(exc))
             return
-        text = "📝 <b>Заявка на изменение данных</b>\n\n" + change_label(req)
-        if req.get("username"):
-            text += f"\n@{esc(req['username'])}"
-        for tg_id in services.change_approvers(req):
-            notify(tg_id, text, change_keyboard(req))
-        show_menu(message.chat.id, uid,
-                  "📨 Заявка отправлена старосте этажа:\n" + change_label(req)
-                  + "\n\nДанные изменятся после подтверждения — я сообщу.")
+        notify.change_request(req)
+        show_menu(message.chat.id, uid, render.change_sent_text(req))
         return
 
     try:
@@ -198,44 +188,26 @@ def step_room(message: types.Message, state: states.State) -> None:
         return
     states.clear(uid)
     user = result.user
-    place = f"комната {room}, этаж {floor}" + (f", {wing} крыло" if wing else "")
+    place = render.place_text(room, floor, wing)
     if not (existing and existing.get("room")):
-        notify_new_user(user, place)
-    send(message.chat.id,
-         f"✅ Готово! <b>{esc(user['surname'])}</b>, {place}.\n\n"
-         "Записаться на стирку — кнопка «📅 Записаться».\n"
-         "Изменить фамилию или комнату, подать заявку на старосту — в «👤 Профиль».",
+        notify.new_user(user, place)
+    send(message.chat.id, render.registered_text(user, place), main_menu(user, uid))
+
+
+def link_by_code(message: types.Message) -> None:
+    uid = message.from_user.id
+    try:
+        user = services.link_account(message.text, "tg", uid)
+    except services.ServiceError as exc:
+        send(message.chat.id, f"{exc}\n\nИли введите фамилию, чтобы зарегистрироваться заново:")
+        return
+    states.clear(uid)
+    notify.send_to_user({"vk_id": user.get("vk_id")}, render.link_notice("tg"))
+    send(message.chat.id, f"✅ Аккаунт Telegram привязан. {esc(user['surname'])}, к.{user['room']}.",
          main_menu(user, uid))
 
 
-def notify_new_user(user: dict, place: str) -> None:
-    """Тихое (без звука) уведомление администраторам и старостам этажа о новом жильце."""
-    text = (f"🆕 <b>Новый пользователь</b>\n{esc(user['surname'])}, {place}"
-            + (f"\n@{esc(user['username'])}" if user.get("username") else ""))
-    recipients = set(config.ADMIN_IDS) | {s["telegram_id"] for s in db.starostas(user["floor"])}
-    recipients.discard(user["telegram_id"])
-    for tg_id in recipients:
-        notify(tg_id, text, silent=True)
-
-
-# --------------------------------------------------------------------------- #
-#  Кнопки профиля
-# --------------------------------------------------------------------------- #
-def notify_admins_about_request(user: dict) -> None:
-    current = [u for u in db.starostas(user["floor"]) if u["id"] != user["id"]]
-    text = (f"📨 <b>Заявка на старосту</b>\n\n"
-            f"{esc(user['surname'])}, к.{user['room']} (этаж {user['floor']})"
-            + (f", @{esc(user['username'])}" if user.get("username") else "")
-            + f"\ntelegram_id: <code>{user['telegram_id']}</code>")
-    if current:
-        text += "\n\nСейчас старосты этого этажа: " + ", ".join(
-            f"{esc(u['surname'])} (к.{u['room']})" for u in current)
-    kb = inline([btn("✅ Одобрить", f"adm:ok:{user['id']}"), btn("❌ Отклонить", f"adm:no:{user['id']}")])
-    for admin_id in config.ADMIN_IDS:
-        notify(admin_id, text, kb)
-
-
-@bot.callback_query_handler(func=lambda c: c.data in ("pr:st", "pr:edit"))
+@bot.callback_query_handler(func=lambda c: c.data in ("pr:st", "pr:edit", "pr:link"))
 @safe
 def profile_callbacks(call: types.CallbackQuery) -> None:
     uid = call.from_user.id
@@ -249,12 +221,22 @@ def profile_callbacks(call: types.CallbackQuery) -> None:
         start_registration(call.message.chat.id, uid, mode="change")
         return
 
+    if call.data == "pr:link":
+        try:
+            code = services.issue_link_code(user, "tg")  # type: ignore[arg-type]
+        except services.ServiceError as exc:
+            answer_result(call, (str(exc), True))
+            return
+        send(call.message.chat.id, render.link_code_text(code, "vk"))
+        answer_result(call, None)
+        return
+
     try:
         services.request_starosta(user)
     except services.ServiceError as exc:
         answer_result(call, (str(exc), True))
         return
-    notify_admins_about_request(db.get_user(uid) or user)
+    notify.starosta_request(db.get_user(uid) or user)
     edit(call, "📨 Заявка на роль старосты отправлена администратору. Я напишу, когда её рассмотрят.")
     answer_result(call, "Заявка отправлена")
 
@@ -267,7 +249,7 @@ SUPPORT_PROMPT = ("✉️ Напишите сообщение администр
 
 
 def start_support(chat_id: int, telegram_id: int) -> None:
-    if not config.ADMIN_IDS:
+    if not services.admins_configured():
         send(chat_id, "Администратор пока не настроен.")
         return
     states.set_state(telegram_id, "support_msg")
@@ -287,14 +269,7 @@ def step_support(message: types.Message, state: states.State) -> None:
     if user is None:
         show_menu(message.chat.id, uid, "Сначала пройдите регистрацию: /start")
         return
-    sender = (f"{esc(user['surname'] or '—')}, к.{user['room'] or '—'}"
-              + (f" (этаж {user['floor']})" if user.get("floor") else "")
-              + (f", @{esc(user['username'])}" if user.get("username") else ""))
-    delivered = 0
-    for admin_id in config.ADMIN_IDS:
-        if notify(admin_id, f"✉️ <b>Сообщение от пользователя</b>\n{sender}\n\n{esc(text)}",
-                  inline(btn("↩️ Ответить", f"adm:rp:{user['id']}"))):
-            delivered += 1
+    delivered = notify.support_message(user, text)
     services.actions.info("SUPPORT_IN от %s: %r", services.who(user), text[:200])
     show_menu(message.chat.id, uid,
               "✅ Сообщение отправлено администратору. Ответ придёт сюда." if delivered

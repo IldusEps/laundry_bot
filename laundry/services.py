@@ -1,11 +1,12 @@
-"""Бизнес-логика бота. Не зависит от telebot: возвращает данные, а уведомления
-рассылают обработчики."""
+"""Бизнес-логика бота. Не зависит от мессенджера: возвращает данные, а уведомления
+рассылают обработчики (через laundry.notify — в Telegram и/или VK)."""
 from __future__ import annotations
 
 import logging
 import re
+import threading
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 from . import config, db
 from . import schedule as sched
@@ -22,8 +23,15 @@ class ServiceError(Exception):
 # --------------------------------------------------------------------------- #
 #  Роли и доступ
 # --------------------------------------------------------------------------- #
-def is_admin(telegram_id: int) -> bool:
-    return telegram_id in config.ADMIN_IDS
+def is_admin(user: dict | None) -> bool:
+    """Администратор — тот, чей telegram_id есть в ADMIN_IDS или vk_id — в VK_ADMIN_IDS."""
+    if not user:
+        return False
+    return user.get("telegram_id") in config.ADMIN_IDS or user.get("vk_id") in config.VK_ADMIN_IDS
+
+
+def admins_configured() -> bool:
+    return bool(config.ADMIN_IDS or config.VK_ADMIN_IDS)
 
 
 def is_registered(user: dict | None) -> bool:
@@ -33,14 +41,16 @@ def is_registered(user: dict | None) -> bool:
 def who(user: dict | None) -> str:
     if not user:
         return "?"
-    return f"{user.get('surname') or '—'} (к.{user.get('room') or '—'}, tg={user.get('telegram_id')})"
+    ids = ", ".join(f"{name}={user[key]}" for key, name in (("telegram_id", "tg"), ("vk_id", "vk"))
+                    if user.get(key) is not None) or "id=" + str(user.get("id"))
+    return f"{user.get('surname') or '—'} (к.{user.get('room') or '—'}, {ids})"
 
 
 def can_manage(user: dict | None, floor: int) -> bool:
     """Староста управляет только своим этажом, администратор — любым."""
     if not user or not sched.floor_is_bookable(floor):
         return False
-    if is_admin(user["telegram_id"]):
+    if is_admin(user):
         return True
     return user["role"] == "starosta" and user["floor"] == floor
 
@@ -84,15 +94,19 @@ class RegistrationResult:
     room_changed: bool
 
 
-def save_registration(existing: dict | None, telegram_id: int, username: str | None, surname: str,
-                      room: str, floor: int, wing: int | None, at: datetime | None = None) -> RegistrationResult:
+def save_registration(existing: dict | None, ext_id: int | None, username: str | None, surname: str,
+                      room: str, floor: int, wing: int | None, at: datetime | None = None,
+                      platform: str | None = "tg") -> RegistrationResult:
+    """existing — текущая запись пользователя (обновляется по её id) или None — новый пользователь
+    (platform, ext_id). platform=None — данные меняет не сам человек (заявка одобрена старостой)."""
     at = at or sched.now()
     old_room = existing.get("room") if existing else None
     room_changed = old_room is not None and old_room != room
     if room_changed and existing and (existing["is_banned"] or db.get_room_ban(old_room)):
         raise ServiceError("🚫 Вы исключены из записи, поэтому сменить комнату нельзя. Обратитесь к старосте этажа.")
 
-    user = db.save_registration(telegram_id, username, surname, room, floor, wing, at)
+    user = db.save_registration(existing["id"] if existing else None, platform, ext_id, username,
+                                surname, room, floor, wing, at)
 
     cancelled: list[dict] = []
     role_reset = False
@@ -101,7 +115,7 @@ def save_registration(existing: dict | None, telegram_id: int, username: str | N
         if existing and existing["floor"] != floor and (existing["role"] == "starosta" or existing["starosta_pending"]):
             db.set_role(user["id"], "resident", at)
             role_reset = existing["role"] == "starosta"
-        user = db.get_user(telegram_id) or user
+        user = db.get_user_by_id(user["id"]) or user
 
     if existing and existing.get("room"):
         actions.info("PROFILE %s -> %s, к.%s", who(existing), surname, room)
@@ -118,7 +132,7 @@ def request_starosta(user: dict, at: datetime | None = None) -> None:
         raise ServiceError("Вы уже староста этажа.")
     if user["starosta_pending"]:
         raise ServiceError("Заявка уже отправлена, ждите решения администратора.")
-    if not config.ADMIN_IDS:
+    if not admins_configured():
         raise ServiceError("Администратор не настроен — заявку некому рассмотреть.")
     db.set_starosta_pending(user["id"], True, at)
     actions.info("STAROSTA_REQUEST %s этаж=%s", who(user), user["floor"])
@@ -126,7 +140,7 @@ def request_starosta(user: dict, at: datetime | None = None) -> None:
 
 def decide_starosta(admin: dict, user_id: int, approve: bool, at: datetime | None = None) -> dict:
     at = at or sched.now()
-    if not is_admin(admin["telegram_id"]):
+    if not is_admin(admin):
         raise ServiceError("⛔ Только для администратора.")
     target = db.get_user_by_id(user_id)
     if not target or not target["starosta_pending"]:
@@ -141,7 +155,7 @@ def decide_starosta(admin: dict, user_id: int, approve: bool, at: datetime | Non
 
 def remove_starosta(admin: dict, user_id: int, at: datetime | None = None) -> dict:
     at = at or sched.now()
-    if not is_admin(admin["telegram_id"]):
+    if not is_admin(admin):
         raise ServiceError("⛔ Только для администратора.")
     target = db.get_user_by_id(user_id)
     if not target or target["role"] != "starosta":
@@ -409,23 +423,23 @@ def request_change(user: dict, surname: str, room: str, floor: int, wing: int | 
     return db.get_change_request(request_id)  # type: ignore[return-value]
 
 
-def change_approvers(request: dict) -> list[int]:
-    """telegram_id тех, кто должен рассмотреть заявку: старосты старого и нового этажа
+def change_approvers(request: dict) -> list[dict]:
+    """Пользователи, которые должны рассмотреть заявку: старосты старого и нового этажа
     (кроме самого заявителя), а если их нет — администраторы."""
-    ids: list[int] = []
+    approvers: dict[int, dict] = {}
     for floor in {request["old_floor"], request["new_floor"]}:
         if floor is None:
             continue
         for s in db.starostas(floor):
-            if s["id"] != request["user_id"] and s["telegram_id"] not in ids:
-                ids.append(s["telegram_id"])
-    return ids or sorted(config.ADMIN_IDS)
+            if s["id"] != request["user_id"]:
+                approvers.setdefault(s["id"], s)
+    return list(approvers.values()) or db.admins()
 
 
 def can_decide_change(manager: dict | None, request: dict) -> bool:
     if not manager:
         return False
-    if is_admin(manager["telegram_id"]):
+    if is_admin(manager):
         return True
     if manager["id"] == request["user_id"]:
         return False
@@ -447,11 +461,97 @@ def decide_change(manager: dict, request_id: int, approve: bool,
         return request, None
 
     current = db.get_user_by_id(request["user_id"])
+    if current is None:
+        raise ServiceError("Пользователь, подавший заявку, больше не найден.")
     try:
-        result = save_registration(current, request["telegram_id"], request["username"], request["new_surname"],
-                                   request["new_room"], request["new_floor"], request["new_wing"], at)
+        result = save_registration(current, None, None, request["new_surname"], request["new_room"],
+                                   request["new_floor"], request["new_wing"], at, platform=None)
     except ServiceError:
         db.execute("UPDATE change_requests SET status = 'rejected' WHERE id = %s", (request_id,))
         raise
     actions.info("CHANGE_APPROVED id=%s, принял %s", request_id, who(manager))
     return request, result
+
+
+# --------------------------------------------------------------------------- #
+#  Привязка второго мессенджера (один человек — один пользователь в БД)
+# --------------------------------------------------------------------------- #
+PLATFORM_NAMES = {"tg": "Telegram", "vk": "ВКонтакте"}
+LINK_TTL_MINUTES = 15
+LINK_MAX_ATTEMPTS = 5   # столько неверных кодов подряд — и ввод кодов с этого аккаунта закрыт на LINK_TTL_MINUTES
+_link_failures: dict[tuple[str, int], list[datetime]] = {}
+_link_lock = threading.Lock()
+
+_LINK_REJECT_TEXT = {
+    "invalid": "Код не подошёл: он неверный, устарел или выдан для другого мессенджера. "
+               "Получите новый код в профиле другого бота.",
+    "already": "Этот аккаунт уже привязан.",
+    "occupied": "К тому профилю уже привязан другой аккаунт {name}.",
+    "room_mismatch": "Здесь вы зарегистрированы в другой комнате. Сначала сделайте комнаты одинаковыми "
+                     "(заявкой на изменение данных), потом привяжите аккаунт.",
+    "has_bookings": "У этого аккаунта есть предстоящие записи. Отмените их в «📋 Мои записи», "
+                    "затем повторите привязку.",
+}
+
+
+def other_platform(platform: str) -> str:
+    return "vk" if platform == "tg" else "tg"
+
+
+def platform_configured(platform: str) -> bool:
+    return bool(config.VK_TOKEN if platform == "vk" else config.BOT_TOKEN)
+
+
+def can_link(user: dict | None, platform: str) -> bool:
+    """Можно ли из мессенджера platform выдать код для привязки второго мессенджера."""
+    target = other_platform(platform)
+    return (is_registered(user) and platform_configured(target)
+            and user.get(db.PLATFORM_COLUMNS[target]) is None)  # type: ignore[union-attr]
+
+
+def issue_link_code(user: dict, platform: str, at: datetime | None = None) -> str:
+    """platform — мессенджер, в котором человек сейчас; код нужно ввести в другом."""
+    if not is_registered(user):
+        raise ServiceError("Сначала пройдите регистрацию.")
+    target = other_platform(platform)
+    if user.get(db.PLATFORM_COLUMNS[target]) is not None:
+        raise ServiceError(f"Аккаунт {PLATFORM_NAMES[target]} уже привязан.")
+    code = db.create_link_code(user["id"], target, at or sched.now(), LINK_TTL_MINUTES)
+    actions.info("LINK_CODE %s -> %s", who(user), target)
+    return code
+
+
+def _too_many_link_attempts(key: tuple[str, int], at: datetime, failed: bool = False) -> bool:
+    """Защита от подбора кода: считает неверные коды аккаунта за последние LINK_TTL_MINUTES минут."""
+    since = at - timedelta(minutes=LINK_TTL_MINUTES)
+    with _link_lock:
+        recent = [t for t in _link_failures.get(key, []) if t > since]
+        if failed:
+            recent.append(at)
+        if recent:
+            _link_failures[key] = recent
+        else:
+            _link_failures.pop(key, None)
+        return len(recent) >= LINK_MAX_ATTEMPTS
+
+
+def link_account(code: str, platform: str, ext_id: int, at: datetime | None = None) -> dict:
+    """Ввод кода в мессенджере platform. Возвращает пользователя после привязки."""
+    at = at or sched.now()
+    key = (platform, ext_id)
+    if _too_many_link_attempts(key, at):
+        raise ServiceError(f"❗ Слишком много неверных кодов. Попробуйте снова через {LINK_TTL_MINUTES} минут.")
+    try:
+        main, merged = db.link_account(code.strip(), platform, ext_id, at)
+    except db.LinkRejected as exc:
+        if exc.code == "invalid" and _too_many_link_attempts(key, at, failed=True):
+            log.warning("Подбор кода привязки? %s=%s: %d неверных кодов подряд",
+                        db.PLATFORM_COLUMNS[platform], ext_id, LINK_MAX_ATTEMPTS)
+        text = _LINK_REJECT_TEXT.get(exc.code, "Не удалось привязать аккаунт.")
+        raise ServiceError("❗ " + text.format(name=PLATFORM_NAMES[platform])) from exc
+    actions.info("LINK %s=%s -> %s%s", db.PLATFORM_COLUMNS[platform], ext_id, who(main),
+                 f", влит пользователь id={merged['id']}" if merged else "")
+    return db.get_user_by_id(main["id"])  # type: ignore[return-value]
+
+
+LINK_CODE_RE = re.compile(r"\d{6}")

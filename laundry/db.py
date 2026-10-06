@@ -1,9 +1,10 @@
 """Работа с MySQL (PyMySQL). Каждая операция — отдельное соединение и транзакция,
-поэтому модуль безопасно вызывать из нескольких потоков telebot."""
+поэтому модуль безопасно вызывать из нескольких потоков (и из двух процессов: Telegram- и VK-бота)."""
 from __future__ import annotations
 
 import logging
 import re
+import secrets
 from contextlib import contextmanager
 from datetime import date, datetime, time, timedelta
 from typing import Any, Iterator
@@ -18,10 +19,21 @@ log = logging.getLogger(__name__)
 _TIME_FIELDS = ("slot_start", "slot_end", "time_from", "time_to")
 _DATE_FIELDS = ("slot_date", "date_from", "date_to")
 
+# Платформа -> колонка users с id пользователя в этом мессенджере
+PLATFORM_COLUMNS = {"tg": "telegram_id", "vk": "vk_id"}
+
 
 class BookingRejected(Exception):
     """Запись отклонена при проверке в транзакции. code: taken | user_limit | room_limit |
     closed | banned | room_banned | stale"""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+class LinkRejected(Exception):
+    """Привязка второго мессенджера отклонена. code: invalid | already | occupied | room_mismatch | has_bookings"""
 
     def __init__(self, code: str):
         super().__init__(code)
@@ -132,13 +144,11 @@ def init_db() -> None:
             cur.execute(statement)
         # Миграция со старой схемы, где номер комнаты был числом (SMALLINT) — теперь строка ('323а')
         for table, column, null in _ROOM_COLUMNS:
-            cur.execute(
-                "SELECT DATA_TYPE AS t FROM information_schema.COLUMNS "
-                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s", (table, column))
-            row = cur.fetchone()
+            row = _column_info(cur, table, column)
             if row and str(row["t"]).lower() != "varchar":
                 cur.execute(f"ALTER TABLE {table} MODIFY {column} VARCHAR(5) {null}")
                 log.info("Миграция: %s.%s -> VARCHAR(5)", table, column)
+        _migrate_users_for_vk(cur)
     log.info("Схема БД проверена (%d таблиц)", len(statements))
 
 
@@ -151,21 +161,48 @@ _ROOM_COLUMNS = (
 )
 
 
-def sync_admins(admin_ids: frozenset[int], at: datetime) -> None:
-    """Создаёт аккаунты администраторов по telegram_id из .env и снимает флаг с остальных."""
+def _column_info(cur: Any, table: str, column: str) -> dict | None:
+    cur.execute(
+        "SELECT DATA_TYPE AS t, IS_NULLABLE AS nullable FROM information_schema.COLUMNS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s", (table, column))
+    return cur.fetchone()
+
+
+def _migrate_users_for_vk(cur: Any) -> None:
+    """Схема до VK-бота: нет users.vk_id, telegram_id обязателен. Данные не меняются."""
+    if _column_info(cur, "users", "vk_id") is None:
+        cur.execute("ALTER TABLE users ADD COLUMN vk_id BIGINT NULL AFTER telegram_id")
+        log.info("Миграция: добавлена колонка users.vk_id")
+    cur.execute("SELECT COUNT(*) AS n FROM information_schema.STATISTICS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND INDEX_NAME = 'uq_users_vk'")
+    if not cur.fetchone()["n"]:
+        cur.execute("ALTER TABLE users ADD UNIQUE KEY uq_users_vk (vk_id)")
+        log.info("Миграция: уникальный индекс users.vk_id")
+    row = _column_info(cur, "users", "telegram_id")
+    if row and str(row["nullable"]).upper() == "NO":
+        cur.execute("ALTER TABLE users MODIFY telegram_id BIGINT NULL")
+        log.info("Миграция: users.telegram_id теперь может быть пустым")
+
+
+def sync_admins(admin_ids: frozenset[int], vk_admin_ids: frozenset[int], at: datetime) -> None:
+    """Создаёт аккаунты администраторов по telegram_id и vk_id из .env и снимает флаг с остальных.
+    Вызывают оба бота при запуске — результат одинаковый."""
     now = _naive(at)
     with transaction() as cur:
         cur.execute("UPDATE users SET is_admin = 0 WHERE is_admin = 1")
-        for tg_id in admin_ids:
-            cur.execute("SELECT id FROM users WHERE telegram_id = %s", (tg_id,))
-            if cur.fetchone():
-                cur.execute("UPDATE users SET is_admin = 1 WHERE telegram_id = %s", (tg_id,))
-            else:
-                cur.execute(
-                    "INSERT INTO users (telegram_id, is_admin, created_at, updated_at) VALUES (%s, 1, %s, %s)",
-                    (tg_id, now, now),
-                )
-                log.info("Создан аккаунт администратора telegram_id=%s", tg_id)
+        for platform, ids in (("tg", admin_ids), ("vk", vk_admin_ids)):
+            column = PLATFORM_COLUMNS[platform]
+            for ext_id in ids:
+                cur.execute(f"SELECT id FROM users WHERE {column} = %s", (ext_id,))
+                if not cur.fetchone():
+                    try:
+                        cur.execute(f"INSERT INTO users ({column}, is_admin, created_at, updated_at) "
+                                    "VALUES (%s, 1, %s, %s)", (ext_id, now, now))
+                        log.info("Создан аккаунт администратора %s=%s", column, ext_id)
+                        continue
+                    except pymysql.IntegrityError:  # второй бот создал его в ту же секунду
+                        pass
+                cur.execute(f"UPDATE users SET is_admin = 1 WHERE {column} = %s", (ext_id,))
 
 
 # --------------------------------------------------------------------------- #
@@ -175,28 +212,51 @@ def get_user(telegram_id: int) -> dict | None:
     return fetch_one("SELECT * FROM users WHERE telegram_id = %s", (telegram_id,))
 
 
+def get_user_by_vk(vk_id: int) -> dict | None:
+    return fetch_one("SELECT * FROM users WHERE vk_id = %s", (vk_id,))
+
+
+def get_account(platform: str, ext_id: int) -> dict | None:
+    return fetch_one(f"SELECT * FROM users WHERE {PLATFORM_COLUMNS[platform]} = %s", (ext_id,))
+
+
 def get_user_by_id(user_id: int) -> dict | None:
     return fetch_one("SELECT * FROM users WHERE id = %s", (user_id,))
 
 
-def save_registration(telegram_id: int, username: str | None, surname: str, room: str,
-                      floor: int, wing: int | None, at: datetime) -> dict:
+def admins() -> list[dict]:
+    """Аккаунты администраторов (флаг ставит sync_admins по ADMIN_IDS и VK_ADMIN_IDS)."""
+    return fetch_all("SELECT * FROM users WHERE is_admin = 1 ORDER BY id")
+
+
+def save_registration(user_id: int | None, platform: str | None, ext_id: int | None, username: str | None,
+                      surname: str, room: str, floor: int, wing: int | None, at: datetime) -> dict:
+    """Сохраняет фамилию и комнату. user_id — обновить этого пользователя, иначе найти или создать
+    по (platform, ext_id). username (Telegram) меняется, только если platform == 'tg'."""
     now = _naive(at)
+    created = False
     with transaction() as cur:
-        cur.execute("SELECT id FROM users WHERE telegram_id = %s FOR UPDATE", (telegram_id,))
-        if cur.fetchone():
-            cur.execute(
-                "UPDATE users SET username = %s, surname = %s, room = %s, floor = %s, wing = %s, updated_at = %s "
-                "WHERE telegram_id = %s",
-                (username, surname, room, floor, wing, now, telegram_id),
-            )
-        else:
-            cur.execute(
-                "INSERT INTO users (telegram_id, username, surname, room, floor, wing, created_at, updated_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-                (telegram_id, username, surname, room, floor, wing, now, now),
-            )
-    return get_user(telegram_id)  # type: ignore[return-value]
+        if user_id is None:
+            column = PLATFORM_COLUMNS[platform or ""]
+            cur.execute(f"SELECT id FROM users WHERE {column} = %s FOR UPDATE", (ext_id,))
+            row = cur.fetchone()
+            if row is not None:
+                user_id = int(row["id"])
+            else:
+                cur.execute(
+                    f"INSERT INTO users ({column}, username, surname, room, floor, wing, created_at, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    (ext_id, username if platform == "tg" else None, surname, room, floor, wing, now, now),
+                )
+                user_id = int(cur.lastrowid)
+                created = True
+        if not created:
+            sets = "surname = %s, room = %s, floor = %s, wing = %s, updated_at = %s"
+            params: list = [surname, room, floor, wing, now]
+            if platform == "tg":
+                sets, params = "username = %s, " + sets, [username, *params]
+            cur.execute(f"UPDATE users SET {sets} WHERE id = %s", (*params, user_id))
+    return get_user_by_id(user_id)  # type: ignore[return-value]
 
 
 def set_starosta_pending(user_id: int, pending: bool, at: datetime) -> None:
@@ -269,7 +329,7 @@ def room_bans(floor: int) -> list[dict]:
 #  Записи
 # --------------------------------------------------------------------------- #
 _BOOKING_SELECT = (
-    "SELECT b.*, u.surname, u.telegram_id FROM bookings b JOIN users u ON u.id = b.user_id "
+    "SELECT b.*, u.surname, u.telegram_id, u.vk_id FROM bookings b JOIN users u ON u.id = b.user_id "
 )
 
 
@@ -448,7 +508,8 @@ def delete_closure(closure_id: int) -> bool:
 # --------------------------------------------------------------------------- #
 #  Заявки на смену фамилии / комнаты
 # --------------------------------------------------------------------------- #
-_CHANGE_SELECT = "SELECT c.*, u.telegram_id, u.username FROM change_requests c JOIN users u ON u.id = c.user_id "
+_CHANGE_SELECT = ("SELECT c.*, u.telegram_id, u.vk_id, u.username FROM change_requests c "
+                  "JOIN users u ON u.id = c.user_id ")
 
 
 def create_change_request(user: dict, new_surname: str, new_room: str, new_floor: int, new_wing: int | None,
@@ -487,6 +548,86 @@ def close_change_request(request_id: int, status: str, by_user_id: int | None, a
     return execute("UPDATE change_requests SET status = %s, decided_by = %s, decided_at = %s "
                    "WHERE id = %s AND status = 'pending'",
                    (status, by_user_id, _naive(at), request_id)) > 0
+
+
+# --------------------------------------------------------------------------- #
+#  Привязка второго мессенджера
+# --------------------------------------------------------------------------- #
+def create_link_code(user_id: int, platform: str, at: datetime, ttl_minutes: int = 15) -> str:
+    """Одноразовый 6-значный код: его нужно ввести в боте платформы platform. Прежние коды человека сгорают."""
+    now = _naive(at)
+    for _ in range(20):
+        code = f"{secrets.randbelow(10 ** 6):06d}"
+        with transaction() as cur:
+            cur.execute("DELETE FROM link_codes WHERE expires_at < %s OR user_id = %s", (now, user_id))
+            try:
+                cur.execute("INSERT INTO link_codes (code, user_id, platform, expires_at, created_at) "
+                            "VALUES (%s, %s, %s, %s, %s)",
+                            (code, user_id, platform, now + timedelta(minutes=ttl_minutes), now))
+            except pymysql.IntegrityError:  # такой код уже выдан кому-то другому
+                continue
+            return code
+    raise RuntimeError("Не удалось подобрать свободный код привязки")
+
+
+def link_account(code: str, platform: str, ext_id: int, at: datetime) -> tuple[dict, dict | None]:
+    """Привязывает аккаунт (platform, ext_id) к пользователю, выдавшему код.
+
+    Если у этого аккаунта уже был свой пользователь в БД, он вливается в основного: та же комната и нет
+    предстоящих записей — иначе LinkRejected. История записей и заявок переходит к основному, исключение
+    и роль старосты сохраняются. Возвращает (основной пользователь до привязки, влитый пользователь или None)."""
+    now = _naive(at)
+    column = PLATFORM_COLUMNS[platform]
+    with transaction() as cur:
+        cur.execute("SELECT * FROM link_codes WHERE code = %s FOR UPDATE", (code,))
+        link = cur.fetchone()
+        if not link or link["platform"] != platform or link["expires_at"] < now:
+            raise LinkRejected("invalid")
+        cur.execute("SELECT * FROM users WHERE id = %s FOR UPDATE", (link["user_id"],))
+        main = cur.fetchone()
+        if main is None:
+            raise LinkRejected("invalid")
+        if main[column] is not None:
+            raise LinkRejected("already" if main[column] == ext_id else "occupied")
+
+        cur.execute(f"SELECT * FROM users WHERE {column} = %s FOR UPDATE", (ext_id,))
+        other = cur.fetchone()
+        if other is not None:
+            if other["room"] and other["room"] != main["room"]:
+                raise LinkRejected("room_mismatch")
+            cur.execute("SELECT COUNT(*) AS n FROM bookings b WHERE b.user_id = %s AND b.status = 'active' AND "
+                        + _future_clause(), (other["id"], *_future_params(at)))
+            if cur.fetchone()["n"]:
+                raise LinkRejected("has_bookings")
+            _merge_user(cur, main, other, now)
+
+        cur.execute(f"UPDATE users SET {column} = %s, updated_at = %s WHERE id = %s", (ext_id, now, main["id"]))
+        cur.execute("DELETE FROM link_codes WHERE code = %s", (code,))
+    return main, other
+
+
+def _merge_user(cur: Any, main: dict, other: dict, now: datetime) -> None:
+    """Переносит всё, что связано с other, на main и удаляет other (внутри транзакции link_account)."""
+    old, new = other["id"], main["id"]
+    cur.execute("UPDATE change_requests SET status = 'cancelled', decided_at = %s "
+                "WHERE user_id = %s AND status = 'pending'", (now, old))
+    for table, col in (("bookings", "user_id"), ("bookings", "cancelled_by"), ("change_requests", "user_id"),
+                       ("change_requests", "decided_by"), ("closures", "created_by"), ("room_bans", "banned_by"),
+                       ("users", "banned_by")):
+        cur.execute(f"UPDATE {table} SET {col} = %s WHERE {col} = %s", (new, old))
+    sets, params = ["updated_at = %s"], [now]
+    if other["is_banned"] and not main["is_banned"]:
+        sets.append("is_banned = 1, banned_by = %s, banned_at = %s")
+        params += [other["banned_by"] if other["banned_by"] != old else new, other["banned_at"]]
+    if other["role"] == "starosta" and main["role"] != "starosta" and other["floor"] == main["floor"]:
+        sets.append("role = 'starosta', starosta_pending = 0")
+    elif other["starosta_pending"] and main["role"] != "starosta":
+        sets.append("starosta_pending = 1")
+    if other["is_admin"]:
+        sets.append("is_admin = 1")
+    cur.execute("DELETE FROM link_codes WHERE user_id = %s", (old,))
+    cur.execute("DELETE FROM users WHERE id = %s", (old,))
+    cur.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = %s", (*params, new))
 
 
 # --------------------------------------------------------------------------- #
