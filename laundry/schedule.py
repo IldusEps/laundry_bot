@@ -15,7 +15,8 @@ FULL_DAY_FROM = time(0, 0)
 FULL_DAY_TO = time(23, 59, 59)
 
 FIRST_BOOKABLE_FLOOR = 2
-SPECIAL_FLOOR = 5
+WEEKDAY_FLOOR = 4   # стирка только по будням
+SPECIAL_FLOOR = 5   # крылья, своя сетка времени
 
 
 # --------------------------------------------------------------------------- #
@@ -58,6 +59,7 @@ class FloorRules:
     user_daily_limit: int          # сколько раз в день может записаться один человек
     room_daily_limit: int | None   # сколько раз в день может стираться одна комната
     wing_weekdays: tuple[tuple[int, tuple[int, ...]], ...] | None = None  # крыло -> дни недели
+    weekdays: tuple[int, ...] | None = None  # дни стирки (0 = пн); None — все шесть дней после открытия записи
 
     def find_slot(self, start: time) -> Slot | None:
         return next((s for s in self.slots if s.start == start), None)
@@ -82,6 +84,17 @@ REGULAR_RULES = FloorRules(
     room_daily_limit=None,
 )
 
+# 4 этаж: время и лимиты как на обычных этажах, но стирка пн–пт (сб и вс — выходные),
+# а запись на новую неделю открывается в воскресенье
+FLOOR4_RULES = FloorRules(
+    slots=REGULAR_SLOTS,
+    anchor_weekday=6,
+    open_time=config.FLOOR4_WEEK_OPEN_TIME,
+    user_daily_limit=2,
+    room_daily_limit=None,
+    weekdays=(0, 1, 2, 3, 4),
+)
+
 FLOOR5_RULES = FloorRules(
     slots=FLOOR5_SLOTS,
     anchor_weekday=6,                 # запись открывается в воскресенье, стирка пн–сб
@@ -92,9 +105,12 @@ FLOOR5_RULES = FloorRules(
                    (2, (0, 2, 4))),   # 2 крыло: пн, ср, пт
 )
 
+# Этажи со своими правилами; остальные живут по REGULAR_RULES
+FLOOR_RULES = {WEEKDAY_FLOOR: FLOOR4_RULES, SPECIAL_FLOOR: FLOOR5_RULES}
+
 
 def rules_for(floor: int) -> FloorRules:
-    return FLOOR5_RULES if floor == SPECIAL_FLOOR else REGULAR_RULES
+    return FLOOR_RULES.get(floor, REGULAR_RULES)
 
 
 def bookable_floors() -> list[int]:
@@ -203,6 +219,7 @@ def current_week(floor: int, wing: int | None = None, at: datetime | None = None
     """Неделя, на которую сейчас открыта запись.
 
     Обычные этажи: запись открывается в пн в 15:00 на вт–вс этой недели.
+    4 этаж: запись открывается в вс в 15:00 на пн–пт следующей недели (сб и вс не стирают).
     5 этаж: запись открывается в вс в 15:00 на пн–сб следующей недели; каждому крылу — свои дни.
     """
     rules = rules_for(floor)
@@ -212,6 +229,8 @@ def current_week(floor: int, wing: int | None = None, at: datetime | None = None
     if at < slot_dt(anchor, rules.open_time):
         anchor -= timedelta(days=7)
     days = [anchor + timedelta(days=i) for i in range(1, 7)]
+    if rules.weekdays is not None:
+        days = [d for d in days if d.weekday() in rules.weekdays]
     allowed = rules.weekdays_for_wing(wing)
     if allowed is not None:
         days = [d for d in days if d.weekday() in allowed]

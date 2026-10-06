@@ -272,6 +272,7 @@ class WeekOpeningTest(BotTestCase):
         self.assertEqual("Записано ✅", user.press_command("bk:c:20261013:0830"))
 
     def test_monday_is_day_off_on_regular_floors(self):
-        user = self.vk_user(9001).register("Иванов", "412")
-        user.tap(BTN_BOOK)
-        self.assertFalse(any(label.startswith("Пн") for label in user.labels()))
+        for i, room in enumerate(("212", "312")):     # этажи 2 и 3; у 4 и 5 этажей свои правила
+            user = self.vk_user(9001 + i).register("Иванов", room)
+            user.tap(BTN_BOOK)
+            self.assertEqual(["Вт", "Ср", "Чт", "Пт", "Сб", "Вс"], [label[:2] for label in user.labels()[:-1]], room)

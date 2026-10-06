@@ -96,4 +96,5 @@ PROXY_URL = os.getenv("PROXY_URL", "").strip()
 
 # Когда открывается запись на новую неделю
 WEEK_OPEN_TIME = _hhmm("WEEK_OPEN_TIME", "15:00")                # понедельник, обычные этажи
+FLOOR4_WEEK_OPEN_TIME = _hhmm("FLOOR4_WEEK_OPEN_TIME", "15:00")  # воскресенье, 4 этаж
 FLOOR5_WEEK_OPEN_TIME = _hhmm("FLOOR5_WEEK_OPEN_TIME", "15:00")  # воскресенье, 5 этаж

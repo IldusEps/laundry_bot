@@ -333,8 +333,8 @@ def _slots_list(rules: sched.FloorRules) -> str:
 
 
 def _regular_floors() -> str:
-    """[2, 3, 4] -> '2–4'; [2, 3, 4, 6, 7] -> '2–4, 6–7'"""
-    floors = [f for f in sched.bookable_floors() if f != sched.SPECIAL_FLOOR]
+    """Этажи с обычными правилами: [2, 3] -> '2–3'; [2, 3, 6, 7] -> '2–3, 6–7'"""
+    floors = [f for f in sched.bookable_floors() if f not in sched.FLOOR_RULES]
     groups: list[list[int]] = []
     for f in floors:
         if groups and f == groups[-1][-1] + 1:
@@ -347,6 +347,7 @@ def _regular_floors() -> str:
 def rules_text(user: dict | None) -> str:
     floor = user.get("floor") if user else None
     regular = sched.REGULAR_RULES
+    f4 = sched.FLOOR4_RULES
     f5 = sched.FLOOR5_RULES
     regular_block = (
         f"🧺 <b>Этажи {_regular_floors()}</b>\n"
@@ -355,6 +356,14 @@ def rules_text(user: dict | None) -> str:
         f"• Время: {_slots_list(regular)}.\n"
         f"• Не больше {regular.user_daily_limit} записей в день на человека.\n"
         f"• Запись на новую неделю открывается в понедельник в {regular.open_time:%H:%M}."
+    )
+    floor4_block = (
+        f"🧺 <b>{sched.WEEKDAY_FLOOR} этаж</b>\n"
+        "• Стирка с понедельника по пятницу, суббота и воскресенье — выходные.\n"
+        "• Одна стирка — 45 минут, между стирками 1 час.\n"
+        f"• Время: {_slots_list(f4)}.\n"
+        f"• Не больше {f4.user_daily_limit} записей в день на человека.\n"
+        f"• Запись на новую неделю открывается в воскресенье в {f4.open_time:%H:%M}."
     )
     floor5_block = (
         "🧺 <b>5 этаж</b>\n"
@@ -371,10 +380,13 @@ def rules_text(user: dict | None) -> str:
               "• 1 этаж в записи не участвует.")
     if floor == sched.SPECIAL_FLOOR:
         blocks = [floor5_block]
+    elif floor == sched.WEEKDAY_FLOOR:
+        blocks = [floor4_block]
     elif sched.floor_is_bookable(floor):
         blocks = [regular_block]
-    else:
-        blocks = [regular_block, floor5_block]
+    else:  # не зарегистрирован — показываем правила всех этажей
+        blocks = [regular_block, *([floor4_block] if sched.floor_is_bookable(sched.WEEKDAY_FLOOR) else []),
+                  floor5_block]
     return "📖 <b>Правила записи на стирку</b>\n\n" + "\n\n".join(blocks) + "\n\n" + common
 
 

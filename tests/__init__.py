@@ -30,6 +30,7 @@ TEST_ENV = {
     "DB_NAME": "test",
     "TIMEZONE": "Europe/Samara",
     "WEEK_OPEN_TIME": "15:00",
+    "FLOOR4_WEEK_OPEN_TIME": "15:00",
     "FLOOR5_WEEK_OPEN_TIME": "15:00",
     "MAX_FLOOR": "5",
     "MAX_ROOM_ON_FLOOR": "36",
