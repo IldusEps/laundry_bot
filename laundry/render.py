@@ -265,7 +265,8 @@ def day_text(grid: Grid, day: date) -> str:
         if cell.booking:
             b = cell.booking
             suffix = " (вы)" if cell.state == "mine" else ""
-            lines.append(f"🔴 {slot.label} — к.{b['room']} {esc(b['surname'])}{suffix}")
+            mark = "⚪" if cell.past else "🔴"  # прошедшая запись — серая, но кто стирал, по-прежнему видно
+            lines.append(f"{mark} {slot.label} — к.{b['room']} {esc(b['surname'])}{suffix}")
         elif cell.state == "closed":
             reason = f" ({esc(cell.closure['reason'])})" if cell.closure and cell.closure.get("reason") else ""
             lines.append(f"⚪ {slot.label} — закрыто{reason}")

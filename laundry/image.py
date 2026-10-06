@@ -1,6 +1,8 @@
 """Картинка с расписанием недели (Pillow).
 
 Цвета: зелёный — свободно, красный — занято, серый — записаться нельзя (прошло или закрыто).
+В занятой ячейке — номер комнаты и фамилия. Когда время записи прошло, ячейка становится серой,
+а подпись остаётся: видно, кто стирал. Картинка общая для Telegram- и VK-бота.
 """
 from __future__ import annotations
 
@@ -11,13 +13,14 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from . import schedule as sched
-from .services import Grid
+from .services import Cell, Grid
 
 FONTS_DIR = Path(__file__).resolve().parent / "fonts"
 
 GREEN = (76, 175, 80)
 RED = (229, 57, 53)
 GRAY = (189, 189, 189)
+DARK_GRAY = (117, 117, 117)
 DARK_RED = (140, 20, 20)
 BG = (255, 255, 255)
 HEADER_BG = (245, 245, 245)
@@ -48,17 +51,29 @@ def _text_center(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], text
     draw.text(((x0 + x1) / 2, (y0 + y1) / 2), text, font=font, fill=fill, anchor="mm")
 
 
-def _cell_style(state: str, booking: dict | None) -> tuple[tuple[int, int, int], str, tuple[int, int, int]]:
-    """(цвет заливки, подпись, цвет подписи)"""
-    if state == "mine":
-        return RED, "ВЫ", WHITE
-    if state == "busy":
-        return RED, f"к.{booking['room']}" if booking else "занято", WHITE
-    if state == "free":
-        return GREEN, "свободно", WHITE
-    if state == "closed":
-        return GRAY, "закрыто", MUTED
-    return GRAY, "", MUTED  # past
+def _fit(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: float) -> str:
+    """Обрезает текст с «…», чтобы он поместился в ячейку по ширине."""
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+    while len(text) > 1 and draw.textlength(text + "…", font=font) > max_width:
+        text = text[:-1]
+    return text + "…"
+
+
+def _cell_style(cell: Cell) -> tuple[tuple[int, int, int], list[str], tuple[int, int, int]]:
+    """(цвет заливки, строки подписи, цвет подписи).
+
+    Запись, время которой прошло, — серая, но подпись (комната и фамилия) остаётся видна."""
+    if cell.booking:
+        fill, color = (GRAY, TEXT) if cell.past else (RED, WHITE)
+        if cell.state == "mine":
+            return fill, ["ВЫ"], color
+        return fill, [f"к.{cell.booking['room']}", str(cell.booking.get("surname") or "")], color
+    if cell.state == "free":
+        return GREEN, ["свободно"], WHITE
+    if cell.state == "closed":
+        return GRAY, ["закрыто"], MUTED
+    return GRAY, [], MUTED  # прошло, записи не было
 
 
 def week_image(grid: Grid, title: str) -> bytes:
@@ -102,14 +117,22 @@ def week_image(grid: Grid, title: str) -> bytes:
         _text_center(draw, (PAD * s, y * s, left * s, (y + CELL_H) * s), slot.label, _font(12), TEXT)
         for i, day in enumerate(days):
             cell = grid.cell(day, slot)
-            fill, label, color = _cell_style(cell.state, cell.booking)
+            fill, lines, color = _cell_style(cell)
+            lines = [line for line in lines if line]
+            mine = cell.state == "mine"
             x0 = left + i * CELL_W
             box = ((x0 + 2) * s, (y + 2) * s, (x0 + CELL_W - 2) * s, (y + CELL_H - 2) * s)
             draw.rounded_rectangle(box, radius=6 * s, fill=fill,
-                                   outline=DARK_RED if cell.state == "mine" else None,
-                                   width=3 * s if cell.state == "mine" else 0)
-            if label:
-                _text_center(draw, box, label, _font(12, bold=cell.state == "mine"), color)
+                                   outline=(DARK_GRAY if cell.past else DARK_RED) if mine else None,
+                                   width=3 * s if mine else 0)
+            if len(lines) == 1:
+                _text_center(draw, box, lines[0], _font(12, bold=mine), color)
+            elif lines:  # запись: номер комнаты, под ним фамилия
+                middle = (box[1] + box[3]) / 2
+                inner = box[2] - box[0] - 8 * s
+                _text_center(draw, (box[0], box[1] + 3 * s, box[2], middle + 1 * s), lines[0], _font(11, True), color)
+                _text_center(draw, (box[0], middle - 1 * s, box[2], box[3] - 3 * s),
+                             _fit(draw, lines[1], _font(10), inner), _font(10), color)
         y += CELL_H
 
     # легенда

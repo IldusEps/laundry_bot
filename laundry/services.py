@@ -173,6 +173,7 @@ class Cell:
     state: str                    # free | busy | mine | closed | past
     booking: dict | None = None
     closure: dict | None = None
+    past: bool = False            # стирка уже началась или прошла (запись при этом остаётся в ячейке)
 
 
 @dataclass
@@ -217,15 +218,16 @@ def build_grid(floor: int, wing: int | None = None, viewer_id: int | None = None
         for slot in rules.slots:
             booking = by_slot.get((day, slot.start))
             closure = next((c for c in closures if sched.closure_covers(c, day, slot)), None)
+            past = sched.slot_dt(day, slot.start) <= at
             if booking:
                 state = "mine" if viewer_id is not None and booking["user_id"] == viewer_id else "busy"
-            elif sched.slot_dt(day, slot.start) <= at:
+            elif past:
                 state = "past"
             elif closure:
                 state = "closed"
             else:
                 state = "free"
-            cells[(day, slot.start)] = Cell(state, booking, closure)
+            cells[(day, slot.start)] = Cell(state, booking, closure, past)
     return Grid(floor, wing, rules, week, at, cells)
 
 
