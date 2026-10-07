@@ -5,16 +5,20 @@
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
 import random
+import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
 import requests
 import vk_api
+from PIL import Image
 from vk_api.exceptions import ApiError, VkApiError
 
 from .. import config
@@ -24,9 +28,11 @@ log = logging.getLogger(__name__)
 MAX_TEXT = 4096          # messages.edit — до 4096 символов (send допускает больше, режем одинаково)
 SNACKBAR_MAX = 90        # подсказка после нажатия callback-кнопки — короткая строка
 RPS = 15                 # лимит сообщества ~20 запросов/с; токен общий у Telegram- и VK-процесса
-UPLOAD_TRIES = 3         # серверы загрузки VK иногда отвечают ошибкой — повторяем
+UPLOAD_TRIES = 2         # серверы загрузки VK иногда отвечают ошибкой — повторяем
 UPLOAD_PAUSE = 1.0       # секунд между попытками
 UPLOAD_TIMEOUT = 30
+SLOW_UPLOAD = 3.0        # секунд: дольше — пишем в лог, чтобы было видно, где бот тормозит
+PHOTO_CACHE = 256        # сколько загруженных картинок помним, чтобы не загружать ту же самую повторно
 NO_PERMISSION = {901: "пользователь не разрешил сообществу писать ему (ошибка 901)",
                  902: "запрет в настройках приватности (ошибка 902)"}
 
@@ -55,6 +61,15 @@ def split_text(text: str, limit: int = MAX_TEXT) -> list[str]:
 
 def _random_id() -> int:
     return random.getrandbits(31)
+
+
+def _to_jpeg(image: bytes) -> bytes | None:
+    try:
+        buf = io.BytesIO()
+        Image.open(io.BytesIO(image)).convert("RGB").save(buf, format="JPEG", quality=92)
+        return buf.getvalue()
+    except (OSError, ValueError):
+        return None
 
 
 class UploadError(Exception):
@@ -112,6 +127,8 @@ class VkClient:
     def __init__(self, session: Any, uploader: Any = None):
         self.session = session
         self.uploader = uploader
+        self._photos: OrderedDict[str, str] = OrderedDict()   # sha1 картинки -> attachment
+        self._photos_lock = threading.Lock()
 
     @classmethod
     def from_token(cls, token: str) -> "VkClient":
@@ -177,13 +194,42 @@ class VkClient:
 
     # ------------------------------------------------------------------ #
     def upload_photo(self, peer_id: int, image: bytes, filename: str = "schedule.png") -> str | None:
-        """PNG -> attachment 'photo<owner>_<id>[_<access_key>]' для сообщения в этот диалог."""
+        """PNG -> attachment 'photo<owner>_<id>[_<access_key>]'.
+
+        Та же самая картинка второй раз не загружается: расписание без изменений открывают часто, а загрузка —
+        самая медленная часть ответа. Если сервер VK не принял PNG, пробуем ту же картинку в JPEG."""
+        digest = hashlib.sha1(image).hexdigest()
+        with self._photos_lock:
+            cached = self._photos.get(digest)
+            if cached:
+                self._photos.move_to_end(digest)
+                return cached
+        started = time.monotonic()
+        attachment = self._upload_image(peer_id, image, filename)
+        if attachment is None:
+            jpeg = _to_jpeg(image)
+            if jpeg:
+                attachment = self._upload_image(peer_id, jpeg, "schedule.jpg")
+                if attachment:
+                    log.info("Картинка в PNG не принята сервером VK, в JPEG — загружена")
+        took = time.monotonic() - started
+        if took > SLOW_UPLOAD:
+            log.info("Загрузка картинки в VK заняла %.1f с (%d КБ)", took, len(image) // 1024)
+        if attachment:
+            with self._photos_lock:
+                self._photos[digest] = attachment
+                while len(self._photos) > PHOTO_CACHE:
+                    self._photos.popitem(last=False)
+        return attachment
+
+    def _upload_image(self, peer_id: int, image: bytes, filename: str) -> str | None:
         buf = io.BytesIO(image)
         buf.name = filename
         try:
             photo = self.uploader.photo_messages(buf, peer_id=peer_id)[0]
         except (UploadError, VkApiError, requests.RequestException, KeyError, IndexError, ValueError) as exc:
-            log.warning("Не удалось загрузить картинку в VK (peer_id=%s): %s", peer_id, exc)
+            log.warning("Не удалось загрузить картинку в VK (peer_id=%s, %s, %d КБ): %s",
+                        peer_id, filename, len(image) // 1024, exc)
             return None
         key = f"_{photo['access_key']}" if photo.get("access_key") else ""
         return f"photo{photo['owner_id']}_{photo['id']}{key}"

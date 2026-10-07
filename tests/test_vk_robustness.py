@@ -69,18 +69,48 @@ class ApiFailureTest(BotTestCase):
             {"upload_url": "https://upload"} if name.endswith("UploadServer")
             else [{"owner_id": -77, "id": 5, "access_key": "k"}])
         client = api.VkClient(session, api.Uploader(session, http))
-        with mock.patch.object(api, "UPLOAD_PAUSE", 0):
+        with mock.patch.object(api, "UPLOAD_PAUSE", 0), mock.patch.object(api, "UPLOAD_TRIES", 3):
             self.assertEqual("photo-77_5_k", client.upload_photo(9001, b"png"))
+            self.assertEqual("photo-77_5_k", client.upload_photo(9002, b"png"), "та же картинка — без загрузки")
         self.assertEqual(3, http.post.call_count)
         self.assertEqual(["photo"], list(http.post.call_args.kwargs["files"]))
         self.assertEqual(("photos.saveMessagesPhoto", {"server": 1, "photo": '[{"p": 1}]', "hash": "h"}),
                          session.method.call_args.args)
         # все попытки неудачны — в логе видно, что ответил сервер; бот не падает
-        http.post.side_effect = [reply(403, "<html>Forbidden</html>")] * 3
+        http.post.side_effect = lambda *args, **kwargs: reply(403, "<html>Forbidden</html>")
         with mock.patch.object(api, "UPLOAD_PAUSE", 0), self.assertLogs("laundry.vk.api", level="WARNING") as logs:
-            self.assertIsNone(client.upload_photo(9001, b"png"))
+            self.assertIsNone(client.upload_photo(9001, b"other"))
         self.assertIn("HTTP 403", logs.output[0])
         self.assertIn("Forbidden", logs.output[0])
+
+    def test_png_rejected_then_jpeg_accepted(self):
+        """Сервер загрузки вернул пустое photo на PNG — та же картинка уходит в JPEG."""
+        import io
+
+        from PIL import Image
+
+        from laundry.vk import api
+
+        png = io.BytesIO()
+        Image.new("RGB", (40, 30), (255, 255, 255)).save(png, format="PNG")
+        names = []
+
+        def post(url, files, timeout):
+            name, _ = files["photo"]
+            names.append(name)
+            text = '{"server": 1, "photo": "", "hash": "h"}' if name.endswith(".png") else                 '{"server": 1, "photo": "[1]", "hash": "h"}'
+            response = mock.Mock(status_code=200, text=text)
+            response.json.return_value = __import__("json").loads(text)
+            return response
+
+        session = mock.Mock()
+        session.method.side_effect = lambda name, values: (
+            {"upload_url": "https://upload"} if name.endswith("UploadServer") else [{"owner_id": -77, "id": 6}])
+        client = api.VkClient(session, api.Uploader(session, mock.Mock(post=post)))
+        with mock.patch.object(api, "UPLOAD_PAUSE", 0), self.assertLogs("laundry.vk.api", level="INFO") as logs:
+            self.assertEqual("photo-77_6", client.upload_photo(9001, png.getvalue()))
+        self.assertEqual(["schedule.png", "schedule.png", "schedule.jpg"], names)
+        self.assertIn("в JPEG — загружена", logs.output[-1])
 
     def test_unknown_and_broken_payloads(self):
         self.user.say("меню")
