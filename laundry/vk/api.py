@@ -9,6 +9,7 @@ import io
 import json
 import logging
 import random
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,9 @@ log = logging.getLogger(__name__)
 MAX_TEXT = 4096          # messages.edit — до 4096 символов (send допускает больше, режем одинаково)
 SNACKBAR_MAX = 90        # подсказка после нажатия callback-кнопки — короткая строка
 RPS = 15                 # лимит сообщества ~20 запросов/с; токен общий у Telegram- и VK-процесса
+UPLOAD_TRIES = 3         # серверы загрузки VK иногда отвечают ошибкой — повторяем
+UPLOAD_PAUSE = 1.0       # секунд между попытками
+UPLOAD_TIMEOUT = 30
 NO_PERMISSION = {901: "пользователь не разрешил сообществу писать ему (ошибка 901)",
                  902: "запрет в настройках приватности (ошибка 902)"}
 
@@ -53,6 +57,54 @@ def _random_id() -> int:
     return random.getrandbits(31)
 
 
+class UploadError(Exception):
+    """Сервер загрузки VK не принял файл."""
+
+
+class Uploader:
+    """Загрузка файлов в личные сообщения: адрес сервера -> отправка файла -> сохранение.
+
+    Своя вместо vk_api.VkUpload: тот шлёт файл в поле «file0» и без User-Agent, а сервер загрузки
+    ждёт поле «photo» / «file» — иначе отвечает не JSON или «photo is undefined».
+    """
+
+    def __init__(self, session: Any, http: Any = None):
+        self.session = session
+        self.http = http or requests.Session()
+
+    def _post(self, url: str, field: str, buf: io.BytesIO) -> dict:
+        buf.seek(0)
+        response = self.http.post(url, files={field: (buf.name, buf)}, timeout=UPLOAD_TIMEOUT)
+        try:
+            data = response.json()
+        except ValueError:
+            data = None
+        if not isinstance(data, dict) or data.get("error") or data.get(field) in (None, "", "[]"):
+            raise UploadError(f"сервер загрузки ответил HTTP {response.status_code}: {response.text[:200]!r}")
+        return data
+
+    def _upload(self, server_method: str, params: dict, field: str, buf: io.BytesIO) -> dict:
+        for attempt in range(1, UPLOAD_TRIES + 1):
+            try:
+                url = self.session.method(server_method, params)["upload_url"]
+                return self._post(url, field, buf)
+            except (UploadError, requests.RequestException) as exc:
+                if attempt == UPLOAD_TRIES:
+                    raise
+                log.debug("Загрузка файла в VK, попытка %s: %s", attempt, exc)
+                time.sleep(UPLOAD_PAUSE)
+        raise UploadError("не осталось попыток")  # недостижимо: цикл либо возвращает, либо бросает
+
+    def photo_messages(self, photo: io.BytesIO, peer_id: int) -> list[dict]:
+        data = self._upload("photos.getMessagesUploadServer", {"peer_id": peer_id}, "photo", photo)
+        return self.session.method("photos.saveMessagesPhoto",
+                                   {"server": data["server"], "photo": data["photo"], "hash": data["hash"]})
+
+    def document_message(self, doc: io.BytesIO, title: str, peer_id: int) -> Any:
+        data = self._upload("docs.getMessagesUploadServer", {"type": "doc", "peer_id": peer_id}, "file", doc)
+        return self.session.method("docs.save", {"file": data["file"], "title": title})
+
+
 class VkClient:
     """session — объект с методом .method(name, values): vk_api.VkApi или имитация в тестах.
     uploader — объект с .photo_messages(photos, peer_id) и .document_message(doc, title, peer_id)."""
@@ -65,7 +117,7 @@ class VkClient:
     def from_token(cls, token: str) -> "VkClient":
         session = vk_api.VkApiGroup(token=token, api_version=config.VK_API_VERSION)
         session.RPS_DELAY = 1 / RPS
-        return cls(session, vk_api.VkUpload(session))
+        return cls(session, Uploader(session))
 
     def call(self, method: str, **params: Any) -> Any:
         return self.session.method(method, params)
@@ -130,7 +182,7 @@ class VkClient:
         buf.name = filename
         try:
             photo = self.uploader.photo_messages(buf, peer_id=peer_id)[0]
-        except (VkApiError, requests.RequestException, KeyError, IndexError, ValueError) as exc:
+        except (UploadError, VkApiError, requests.RequestException, KeyError, IndexError, ValueError) as exc:
             log.warning("Не удалось загрузить картинку в VK (peer_id=%s): %s", peer_id, exc)
             return None
         key = f"_{photo['access_key']}" if photo.get("access_key") else ""
@@ -144,7 +196,7 @@ class VkClient:
             buf.name = title
             result = self.uploader.document_message(buf, title=title, peer_id=peer_id)
             doc = result["doc"] if "doc" in result else result[0]
-        except (OSError, VkApiError, requests.RequestException, KeyError, IndexError, TypeError) as exc:
+        except (OSError, UploadError, VkApiError, requests.RequestException, KeyError, IndexError, TypeError) as exc:
             log.warning("Не удалось загрузить файл %s в VK: %s", path.name, exc)
             return None
         return f"doc{doc['owner_id']}_{doc['id']}"

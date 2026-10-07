@@ -51,6 +51,37 @@ class ApiFailureTest(BotTestCase):
         self.assertIn("Расписание стирки", self.user.text)
         self.assertIn("Ср 07.10 · 10 своб.", self.user.labels())
 
+    def test_uploader_sends_photo_field_and_retries(self):
+        """Сервер загрузки сначала отвечает не JSON, потом пустым photo, потом принимает файл."""
+        from laundry.vk import api
+
+        def reply(status, text):
+            response = mock.Mock(status_code=status, text=text)
+            response.json.side_effect = lambda: __import__("json").loads(text)
+            return response
+
+        http = mock.Mock()
+        http.post.side_effect = [reply(502, "<html>Bad Gateway</html>"),
+                                 reply(200, '{"server": 1, "photo": "[]", "hash": "h"}'),
+                                 reply(200, '{"server": 1, "photo": "[{\\"p\\": 1}]", "hash": "h"}')]
+        session = mock.Mock()
+        session.method.side_effect = lambda name, values: (
+            {"upload_url": "https://upload"} if name.endswith("UploadServer")
+            else [{"owner_id": -77, "id": 5, "access_key": "k"}])
+        client = api.VkClient(session, api.Uploader(session, http))
+        with mock.patch.object(api, "UPLOAD_PAUSE", 0):
+            self.assertEqual("photo-77_5_k", client.upload_photo(9001, b"png"))
+        self.assertEqual(3, http.post.call_count)
+        self.assertEqual(["photo"], list(http.post.call_args.kwargs["files"]))
+        self.assertEqual(("photos.saveMessagesPhoto", {"server": 1, "photo": '[{"p": 1}]', "hash": "h"}),
+                         session.method.call_args.args)
+        # все попытки неудачны — в логе видно, что ответил сервер; бот не падает
+        http.post.side_effect = [reply(403, "<html>Forbidden</html>")] * 3
+        with mock.patch.object(api, "UPLOAD_PAUSE", 0), self.assertLogs("laundry.vk.api", level="WARNING") as logs:
+            self.assertIsNone(client.upload_photo(9001, b"png"))
+        self.assertIn("HTTP 403", logs.output[0])
+        self.assertIn("Forbidden", logs.output[0])
+
     def test_unknown_and_broken_payloads(self):
         self.user.say("меню")
         cmid = self.user.last["cmid"]
