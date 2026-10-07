@@ -45,6 +45,11 @@ class Ctx:
         """Новое сообщение (длинное делится на части в клиенте)."""
         self.client.send(self.peer_id, render.plain(html), keyboard, self._photo(image))
 
+    def loading(self, html: str) -> None:
+        """Сразу показывает «подождите»; следующий edit заменит это сообщение готовым ответом."""
+        if self.cmid is None:
+            self.cmid = self.client.send_placeholder(self.peer_id, render.plain(html))
+
     def edit(self, html: str, keyboard: str | None = None, image: bytes | None = None) -> None:
         """Меняет сообщение с нажатой кнопкой (текст, картинку, кнопки). Не вышло — отправляет новое."""
         text = render.plain(html)

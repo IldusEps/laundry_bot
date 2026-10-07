@@ -16,6 +16,7 @@ from ..router import command, menu
 
 log = logging.getLogger(__name__)
 
+LOADING = "⏳ Загружаю расписание…"
 TO_WEEK = ("⬅️ К неделе", "bk:w")
 
 
@@ -88,7 +89,9 @@ def cmd_book(ctx: Ctx) -> None:
         ctx.send(reason)
         return
     text, keyboard, picture = week_view(user)  # type: ignore[arg-type]
-    ctx.send(text, keyboard, image=picture)
+    if picture is not None and not ctx.client.photo_cached(picture):
+        ctx.loading(LOADING)  # загрузка картинки в VK занимает секунды — человек сразу видит, что бот работает
+    ctx.edit(text, keyboard, image=picture)
 
 
 @menu("menu:my")

@@ -112,6 +112,27 @@ class ApiFailureTest(BotTestCase):
         self.assertEqual(["schedule.png", "schedule.png", "schedule.jpg"], names)
         self.assertIn("в JPEG — загружена", logs.output[-1])
 
+    def test_loading_message_is_replaced_by_schedule(self):
+        """«Записаться»: сначала «Загружаю расписание…», затем это же сообщение становится расписанием."""
+        before = len(self.vk.dialog(9001))
+        self.user.tap(BTN_BOOK)
+        self.assertEqual("⏳ Загружаю расписание…", self.vk.sent[-1]["text"])
+        self.assertIsNone(self.vk.sent[-1]["attachment"])
+        self.assertEqual(before + 1, len(self.vk.dialog(9001)), "заглушка заменена, второго сообщения нет")
+        self.assertIn("Расписание стирки", self.user.text)
+        self.assertTrue(self.user.last["attachment"].startswith("photo"))
+        self.assertIn("Ср 07.10 · 10 своб.", self.user.labels())
+        # та же картинка уже загружена — расписание приходит сразу, без заглушки
+        self.user.tap(BTN_BOOK)
+        self.assertIn("Расписание стирки", self.vk.sent[-1]["text"])
+        self.assertEqual(before + 2, len(self.vk.dialog(9001)))
+        # заглушку не удалось заменить — расписание приходит новым сообщением
+        self.client._photos.clear()
+        self.vk.fail_edits = True
+        self.user.tap(BTN_BOOK)
+        self.assertEqual(before + 4, len(self.vk.dialog(9001)))
+        self.assertTrue(self.user.last["attachment"].startswith("photo"))
+
     def test_unknown_and_broken_payloads(self):
         self.user.say("меню")
         cmid = self.user.last["cmid"]

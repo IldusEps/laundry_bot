@@ -162,6 +162,17 @@ class VkClient:
                 return None
         return message_id
 
+    def send_placeholder(self, peer_id: int, text: str) -> int | None:
+        """Короткое сообщение «подождите», которое затем заменяется через edit.
+
+        Возвращает conversation_message_id (его отдаёт только вариант messages.send с peer_ids) или None."""
+        try:
+            result = self.call("messages.send", peer_ids=str(peer_id), random_id=_random_id(), message=text)
+            return int(result[0]["conversation_message_id"])
+        except (VkApiError, requests.RequestException, LookupError, TypeError, ValueError) as exc:
+            log.debug("Сообщение-заглушка не отправлено или без номера (peer_id=%s): %s", peer_id, exc)
+            return None
+
     def edit(self, peer_id: int, cmid: int, text: str, keyboard: str | None = None,
              attachment: str | None = None) -> bool:
         """Меняет текст, вложение и клавиатуру сообщения. False — не получилось (старое, удалено, ошибка)."""
@@ -221,6 +232,11 @@ class VkClient:
                 while len(self._photos) > PHOTO_CACHE:
                     self._photos.popitem(last=False)
         return attachment
+
+    def photo_cached(self, image: bytes) -> bool:
+        """Эта картинка уже загружена — отправится без задержки."""
+        with self._photos_lock:
+            return hashlib.sha1(image).hexdigest() in self._photos
 
     def _upload_image(self, peer_id: int, image: bytes, filename: str) -> str | None:
         buf = io.BytesIO(image)

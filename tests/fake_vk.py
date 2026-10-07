@@ -71,7 +71,8 @@ class FakeVk:
     #  Методы API
     # ------------------------------------------------------------------ #
     def _messages_send(self, v: dict) -> int:
-        peer_id = v.get("peer_id")
+        many = "peer_ids" in v                      # с peer_ids VK отвечает списком с conversation_message_id
+        peer_id = int(v["peer_ids"]) if many else v.get("peer_id")
         if not peer_id or "random_id" not in v:
             self._violation("messages.send без peer_id или random_id")
         if peer_id in self.blocked:
@@ -87,6 +88,8 @@ class FakeVk:
                    "keyboard": keyboard, "attachment": attachment, "edits": 0}
         dialog.append(message)
         self.sent.append(dict(message))
+        if many:
+            return [{"peer_id": peer_id, "message_id": message["id"], "conversation_message_id": message["cmid"]}]
         return message["id"]
 
     def _messages_edit(self, v: dict) -> int:
