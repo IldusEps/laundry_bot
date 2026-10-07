@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from ... import config, db, notify, render, services, states
+from ... import config, db, notify, render, services, shower, states
 from ... import schedule as sched
 from ...render import esc
 from .. import keyboards as kb
@@ -77,6 +77,21 @@ def show_help(ctx: Ctx) -> None:
 @menu("menu:rules")
 def show_rules(ctx: Ctx) -> None:
     ctx.send(render.rules_text(ctx.user()))
+
+
+@menu("menu:shower")
+def show_shower(ctx: Ctx) -> None:
+    images = shower.pictures()
+    if not images:
+        ctx.send(shower.MISSING_TEXT)
+        return
+    # обе картинки — в одном сообщении; после первой загрузки они отправляются без задержки
+    uploaded = [ctx.client.upload_photo(ctx.peer_id, image, "shower.jpg") for image in images]
+    attachment = ",".join(a for a in uploaded if a)
+    if not attachment:
+        ctx.send(shower.FAILED_TEXT)
+        return
+    ctx.client.send(ctx.peer_id, render.plain(shower.CAPTION), attachment=attachment)
 
 
 @menu("menu:register")

@@ -3,7 +3,7 @@
 Сценарии идут через настоящий telebot: bot.process_new_updates -> фильтры -> обработчики из laundry/handlers.
 """
 from laundry import config, db
-from laundry.keyboards import (BTN_ADMIN, BTN_BOOK, BTN_MY, BTN_PROFILE, BTN_REGISTER, BTN_RULES, BTN_STAROSTA,
+from laundry.keyboards import (BTN_ADMIN, BTN_BOOK, BTN_MY, BTN_PROFILE, BTN_REGISTER, BTN_RULES, BTN_SHOWER, BTN_STAROSTA,
                                BTN_SUPPORT)
 
 from .base import TG_ADMIN, BotTestCase, day, hm
@@ -28,7 +28,7 @@ class TelegramResidentTest(BotTestCase):
         self.assertEqual(("Иванов", "323а", 3, "ivanov", None),
                          (row["surname"], row["room"], row["floor"], row["username"], row["vk_id"]))
         self.assertIn("✅ Готово! <b>Иванов</b>, комната 323а, этаж 3.", user.text)
-        self.assertEqual([BTN_BOOK, BTN_MY, BTN_PROFILE, BTN_RULES, BTN_SUPPORT], user.menu_labels())
+        self.assertEqual([BTN_BOOK, BTN_MY, BTN_PROFILE, BTN_RULES, BTN_SHOWER, BTN_SUPPORT], user.menu_labels())
 
     def test_booking_flow(self):
         user = self.tg_user(2001).register("Иванов", "312")
@@ -160,7 +160,7 @@ class TelegramStarostaAdminTest(BotTestCase):
 
     def test_admin_panel_support_and_logs(self):
         self.admin.say("/start")
-        self.assertEqual([BTN_REGISTER, BTN_RULES, BTN_ADMIN], self.admin.menu_labels())
+        self.assertEqual([BTN_REGISTER, BTN_RULES, BTN_SHOWER, BTN_ADMIN], self.admin.menu_labels())
         self.admin.say(BTN_ADMIN)
         self.assertEqual(["📨 Заявки старост (0)", "📝 Заявки на изменение данных (0)", "🏢 Управление этажом",
                           "⭐ Старосты", "📊 Статистика", "📄 Логи"], self.admin.labels())

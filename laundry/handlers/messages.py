@@ -9,8 +9,8 @@ from __future__ import annotations
 from telebot import types
 
 from .. import db, services, states
-from ..keyboards import (BTN_ADMIN, BTN_BOOK, BTN_MY, BTN_PROFILE, BTN_REGISTER, BTN_RULES, BTN_STAROSTA,
-                         BTN_SUPPORT, main_menu)
+from ..keyboards import (BTN_ADMIN, BTN_BOOK, BTN_MY, BTN_PROFILE, BTN_REGISTER, BTN_RULES, BTN_SHOWER,
+                         BTN_STAROSTA, BTN_SUPPORT, main_menu)
 from ..loader import bot
 from ..utils import safe, send
 from . import admin, booking, common, manage
@@ -20,6 +20,7 @@ MENU = {
     BTN_MY: booking.cmd_my,
     BTN_PROFILE: common.cmd_profile,
     BTN_RULES: common.cmd_rules,
+    BTN_SHOWER: common.cmd_shower,
     BTN_STAROSTA: manage.cmd_panel,
     BTN_ADMIN: admin.cmd_panel,
     BTN_REGISTER: common.cmd_register,

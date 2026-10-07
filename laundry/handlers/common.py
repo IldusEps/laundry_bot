@@ -5,12 +5,12 @@ import logging
 
 from telebot import types
 
-from .. import db, notify, render, services, states
+from .. import db, notify, render, services, shower, states
 from .. import schedule as sched
 from ..keyboards import main_menu, remove
 from ..loader import bot
 from ..render import change_label, esc
-from ..utils import answer_result, btn, edit, inline, safe, send
+from ..utils import answer_result, btn, edit, inline, safe, send, send_photo
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +99,16 @@ def cmd_profile_command(message: types.Message) -> None:
 # --------------------------------------------------------------------------- #
 def cmd_rules(message: types.Message) -> None:
     send(message.chat.id, render.rules_text(db.get_user(message.from_user.id)))
+
+
+def cmd_shower(message: types.Message) -> None:
+    images = shower.pictures()
+    if not images:
+        send(message.chat.id, shower.MISSING_TEXT)
+        return
+    sent = [send_photo(message.chat.id, image, shower.CAPTION if i == 0 else "") for i, image in enumerate(images)]
+    if not any(sent):
+        send(message.chat.id, shower.FAILED_TEXT)
 
 
 def cmd_register(message: types.Message) -> None:

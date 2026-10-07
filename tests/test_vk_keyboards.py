@@ -131,8 +131,8 @@ class MenuKeyboardTest(unittest.TestCase):
             keyboard = vk._check_keyboard(main_menu(user))
             self.assertFalse(keyboard.get("inline"))
             self.assertFalse(keyboard["one_time"])
-        self.assertEqual(5, len(labels(main_menu(resident))))
-        self.assertEqual(6, len(labels(main_menu(starosta))))
+        self.assertEqual(6, len(labels(main_menu(resident))))
+        self.assertEqual(7, len(labels(main_menu(starosta))))
         self.assertIn("🛠 Админ-панель", labels(main_menu(admin)))
         self.assertNotIn("✉️ Написать администратору", labels(main_menu(admin)))
 

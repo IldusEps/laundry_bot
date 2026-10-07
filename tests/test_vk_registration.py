@@ -1,6 +1,6 @@
 """VK: первый вход, регистрация с ошибками ввода, главное меню, профиль, правила."""
 from laundry import db
-from laundry.keyboards import (BTN_ADMIN, BTN_BOOK, BTN_MY, BTN_PROFILE, BTN_REGISTER, BTN_RULES, BTN_SUPPORT)
+from laundry.keyboards import (BTN_ADMIN, BTN_BOOK, BTN_MY, BTN_PROFILE, BTN_REGISTER, BTN_RULES, BTN_SHOWER, BTN_SUPPORT)
 
 from .base import VK_ADMIN, BotTestCase
 
@@ -23,7 +23,7 @@ class RegistrationTest(BotTestCase):
         self.assertEqual(("Иванов", "312", 3, None), (row["surname"], row["room"], row["floor"], row["wing"]))
         self.assertIsNone(row["telegram_id"])
         self.assertIn("Готово! Иванов, комната 312, этаж 3", user.text)
-        self.assertEqual([BTN_BOOK, BTN_MY, BTN_PROFILE, BTN_RULES, BTN_SUPPORT], user.menu_labels())
+        self.assertEqual([BTN_BOOK, BTN_MY, BTN_PROFILE, BTN_RULES, BTN_SHOWER, BTN_SUPPORT], user.menu_labels())
 
     def test_surname_errors(self):
         user = self.vk_user(9001).start()
@@ -101,10 +101,10 @@ class RegistrationTest(BotTestCase):
     def test_admin_first_entry(self):
         admin = self.vk_user(VK_ADMIN).start()
         self.assertIn("администратор", admin.text)
-        self.assertEqual([BTN_REGISTER, BTN_RULES, BTN_ADMIN], admin.menu_labels())
+        self.assertEqual([BTN_REGISTER, BTN_RULES, BTN_SHOWER, BTN_ADMIN], admin.menu_labels())
         admin.tap(BTN_REGISTER).say("Админов").say("210")
         # зарегистрированный админ записывается как жилец, кнопки «Написать администратору» у него нет
-        self.assertEqual([BTN_BOOK, BTN_MY, BTN_PROFILE, BTN_RULES, BTN_ADMIN], admin.menu_labels())
+        self.assertEqual([BTN_BOOK, BTN_MY, BTN_PROFILE, BTN_RULES, BTN_SHOWER, BTN_ADMIN], admin.menu_labels())
 
     def test_messages_in_chats_are_ignored(self):
         from laundry.vk import dispatcher

@@ -49,8 +49,8 @@ class FakeVk:
 
     def photo_messages(self, photos: Any, peer_id: int | None = None) -> list[dict]:
         data = photos.read()
-        if not data.startswith(PNG_SIGNATURE):
-            self._violation("в фото загружен не PNG")
+        if not data.startswith((PNG_SIGNATURE, bytes([0xFF, 0xD8]))):
+            self._violation("в фото загружен не PNG и не JPEG")
         if not peer_id:
             self._violation("photo_messages без peer_id")
         self._ids += 1

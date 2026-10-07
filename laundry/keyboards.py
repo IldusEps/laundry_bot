@@ -9,6 +9,7 @@ BTN_BOOK = "📅 Записаться"
 BTN_MY = "📋 Мои записи"
 BTN_PROFILE = "👤 Профиль"
 BTN_RULES = "ℹ️ Правила"
+BTN_SHOWER = "🚿 Расписание душа"
 BTN_STAROSTA = "⭐ Панель старосты"
 BTN_ADMIN = "🛠 Админ-панель"
 BTN_REGISTER = "📝 Регистрация"
@@ -21,12 +22,14 @@ def main_menu(user: dict | None, telegram_id: int) -> types.ReplyKeyboardMarkup:
     if services.is_registered(user):
         kb.row(BTN_BOOK, BTN_MY)
         kb.row(BTN_PROFILE, BTN_RULES)
+        kb.row(BTN_SHOWER)
         if user and user["role"] == "starosta":
             kb.row(BTN_STAROSTA)
         if not admin:
             kb.row(BTN_SUPPORT)
     else:
         kb.row(BTN_REGISTER, BTN_RULES)
+        kb.row(BTN_SHOWER)
     if admin:
         kb.row(BTN_ADMIN)
     return kb
