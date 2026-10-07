@@ -187,3 +187,27 @@ class LongPollTest(BotTestCase):
         self.assertIn("ReadTimeout", logs.output[1])
         # события до и после обрывов обработаны, регистрация прошла
         self.assertEqual("312", db.get_user_by_vk(9001)["room"])
+
+    def test_missing_token_rights_are_explained(self):
+        """Ключ без права «Управление сообществом»: groups.getLongPollServer отвечает ошибкой 15."""
+        stop = threading.Event()
+
+        def finish():
+            stop.set()
+            return []
+
+        denied = self.vk._error("groups.getLongPollServer", {}, 15, "Access denied: no access to call this method")
+        _FakeLongPoll.created = 0
+        _FakeLongPoll.script = [denied, [mock.Mock(side_effect=finish)]]
+        with mock.patch.object(vk_bot, "VkBotLongPoll", _FakeLongPoll), \
+                mock.patch.object(_FakeLongPoll, "check", lambda self: self.steps.pop(0)()), \
+                mock.patch.object(vk_bot, "RETRY_MAX", 0), \
+                self.assertLogs("laundry.vk.bot", level="WARNING") as logs:
+            runner = threading.Thread(target=vk_bot.run, args=(self.client, GROUP_ID, stop))
+            runner.start()
+            runner.join(20)
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(2, _FakeLongPoll.created, "после исправления ключа бот подключится сам")
+        self.assertEqual(1, len(logs.output))
+        self.assertTrue(logs.output[0].startswith("ERROR"), logs.output[0])
+        self.assertIn("Управление сообществом", logs.output[0])
